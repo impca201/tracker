@@ -1,0 +1,15 @@
+{
+  "name": "camper-tracker",
+  "version": "1.0.0",
+  "description": "Tracker for camper routes",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "nodemailer": "^6.9.11"
+  }
+}
