@@ -1,0 +1,44 @@
+name: Check Camper routes
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # Every 30 minutes
+  workflow_dispatch:        # Manual run button
+
+concurrency:
+  group: camper-tracker
+  cancel-in-progress: false
+
+jobs:
+  run-tracker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # Added: allow pushing history.json
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run script
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          API_BASE_URL: ${{ secrets.API_BASE_URL }}
+          BOOKING_URL: ${{ secrets.BOOKING_URL }}
+        run: node index.js
+
+      - name: Commit history
+        run: |
+          git config --global user.name "GitHub Action Bot"
+          git config --global user.email "action@github.com"
+          git add history.json
+          # Check whether there are changes in history.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update history [skip ci]" && git pull --rebase && git push)
