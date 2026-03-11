@@ -14,6 +14,14 @@ function formatDate(dateString) {
   return `${d.getUTCDate().toString().padStart(2, '0')}-${(d.getUTCMonth() + 1).toString().padStart(2, '0')}-${d.getUTCFullYear()}`;
 }
 
+function formatRouteLabel(routeId) {
+  if (!routeId) return 'General error';
+  const [fromId, toId] = routeId.split('-').map(Number);
+  const from = getStationById(fromId);
+  const to = getStationById(toId);
+  return `${from.name} (${from.country}) -> ${to.name} (${to.country})`;
+}
+
 async function fetchQuiet(url, routeId, errors, retries = config.settings.maxRetries || 3) {
   for (let i = 0; i < retries; i++) {
     const controller = new AbortController();
@@ -203,7 +211,7 @@ async function run() {
   let errorBlock = '';
   if (hadErrors) {
     const lines = criticalErrors.map(e => {
-      const route = e.routeId ? `Route ${e.routeId}` : 'General error';
+      const route = formatRouteLabel(e.routeId);
       const status = e.status !== null ? ` (status: ${e.status})` : '';
       return `• ${route}${status}: ${e.message}`;
     });
