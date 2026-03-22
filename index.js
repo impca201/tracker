@@ -101,15 +101,17 @@ async function run() {
     history = [];
   }
 
-  // Clean up old history entries (rallies in the past)
+  // Clean up old history entries (rallies older than 7 days)
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
+  const cutoffDate = new Date(today);
+  cutoffDate.setDate(today.getDate() - 7);
   history = history.filter(entry => {
     // Expected format: "1-2_2025-05-01"
     const parts = entry.split('_');
     if (parts.length > 1) {
       const startDate = new Date(parts[1]);
-      if (startDate < today) {
+      if (startDate < cutoffDate) {
         return false;
       }
     }
@@ -164,10 +166,9 @@ async function run() {
         if (!timeframe.startDate || !timeframe.endDate) continue;
 
         const uniqueKey = `${routeId}_${timeframe.startDate}`;
-        if (!historySet.has(uniqueKey)) {
+        if (!historySet.has(uniqueKey) && !found.find(f => f.uniqueKey === uniqueKey)) {
           console.log(`✅ New route found: ${stationFrom.name} -> ${stationTo.name}`);
-          historySet.add(uniqueKey);
-          found.push({ fromId, toId, startDate: timeframe.startDate, endDate: timeframe.endDate });
+          found.push({ fromId, toId, startDate: timeframe.startDate, endDate: timeframe.endDate, uniqueKey });
         }
       }
     }
@@ -177,10 +178,9 @@ async function run() {
   const criticalErrors = errors.filter(e => e.status !== 429);
   const hadErrors = criticalErrors.length > 0;
 
-  // Always persist state (and sort alphabetically to reduce Git diff noise)
-  fs.writeFileSync('history.json', JSON.stringify([...historySet].sort(), null, 2));
-
   if (found.length === 0 && !hadErrors) {
+    // Always persist state (and sort alphabetically to reduce Git diff noise)
+    fs.writeFileSync('history.json', JSON.stringify([...historySet].sort(), null, 2));
     console.log('No new routes found and no critical API errors. No email sent.');
     return;
   }
@@ -256,9 +256,17 @@ async function run() {
       html: body
     });
     console.log('Email sent successfully!');
+
+    // Only add to history if email was successfully sent
+    for (const r of found) {
+      historySet.add(r.uniqueKey);
+    }
   } catch (e) {
     console.error('[Error] Mail failed:', e.message);
   }
+
+  // Persist state after attempting to send the email
+  fs.writeFileSync('history.json', JSON.stringify([...historySet].sort(), null, 2));
 }
 
 run().catch(err => {
