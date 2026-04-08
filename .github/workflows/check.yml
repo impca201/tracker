@@ -1,9 +1,7 @@
 name: Check routes
 
 on:
-  schedule:
-    - cron: '*/30 * * * *'  # Every 30 minutes
-  workflow_dispatch:        # Manual run button
+  workflow_dispatch:        # Triggered externally by cron-job.org
 
 concurrency:
   group: route-tracker
