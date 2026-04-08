@@ -1,12 +1,12 @@
-name: Check Camper routes
+name: Check routes
 
 on:
   schedule:
-    - cron: '*/30 * * * *'  # Every 30 minutes
+    - cron: '*/10 * * * *'  # Every 10 minutes
   workflow_dispatch:        # Manual run button
 
 concurrency:
-  group: camper-tracker
+  group: route-tracker
   cancel-in-progress: false
 
 jobs:
