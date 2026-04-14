@@ -28,17 +28,24 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate) {
       return null;
     }
 
-    console.log(`    [Kiwi MCP raw] ${raw.slice(0, 400)}`);
+    // Response is a JSON array string
+    let flights;
+    try {
+      flights = JSON.parse(raw);
+    } catch {
+      console.log(`    [Kiwi MCP] Kon JSON niet parsen: ${raw.slice(0, 200)}`);
+      return null;
+    }
 
-    const priceMatch = raw.match(/[€]\s*(\d+(?:[.,]\d+)?)|EUR\s*(\d+(?:[.,]\d+)?)/i);
-    const price = priceMatch
-      ? parseFloat((priceMatch[1] || priceMatch[2]).replace(',', '.'))
-      : null;
+    if (!Array.isArray(flights) || flights.length === 0) return null;
 
-    const linkMatch = raw.match(/https?:\/\/[^\s)>"']*kiwi\.com[^\s)>"']*/i);
-    const link = linkMatch ? linkMatch[0] : 'https://www.kiwi.com';
+    // Goedkoopste vlucht kiezen
+    const best = flights.sort((a, b) => a.price - b.price)[0];
+    const price = best.price;
+    const link = best.deepLink || best.bookingLink || `https://www.kiwi.com/deep?from=${flyFrom}&to=${flyTo}&departure=${departureDate}`;
 
-    return price ? { price, link } : null;
+    console.log(`    [Kiwi MCP] Beste vlucht: ${flyFrom}->${flyTo} €${price}`);
+    return { price, link };
   } finally {
     await client.close();
   }
@@ -47,7 +54,6 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate) {
 function addDays(dateStr, days) {
   const d = new Date(dateStr);
   d.setUTCDate(d.getUTCDate() + days);
-  // Kiwi MCP verwacht dd/mm/yyyy
   const dd = String(d.getUTCDate()).padStart(2, '0');
   const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
   const yyyy = d.getUTCFullYear();
