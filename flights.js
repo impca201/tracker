@@ -8,11 +8,7 @@ const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/cli
 
 const KIWI_MCP_URL = 'https://mcp.kiwi.com';
 
-/**
- * Call the Kiwi MCP search-flight tool.
- * Returns { price, link } or null.
- */
-async function callKiwiMcp(args) {
+async function callKiwiMcp(flyFrom, flyTo, departureDate) {
   const client = new Client(
     { name: 'camper-tracker', version: '1.0.0' },
     { capabilities: {} }
@@ -21,21 +17,26 @@ async function callKiwiMcp(args) {
   await client.connect(transport);
 
   try {
-    const result = await client.callTool({ name: 'search-flight', arguments: args });
-
-    // Log volledige result structuur voor debugging
-    console.log(`    [Kiwi MCP result] ${JSON.stringify(result).slice(0, 500)}`);
+    const result = await client.callTool({
+      name: 'search-flight',
+      arguments: {
+        flyFrom,
+        flyTo,
+        departureDate,
+        adults: 1
+      }
+    });
 
     const raw = result?.content?.[0]?.text;
     if (!raw) {
-      console.log(`    [Kiwi MCP] Geen tekst in content[0]. Keys: ${Object.keys(result || {}).join(', ')}`);
+      console.log(`    [Kiwi MCP] Lege response voor ${flyFrom}->${flyTo} op ${departureDate}`);
       return null;
     }
 
-    console.log(`    [Kiwi MCP raw] ${raw.slice(0, 300)}`);
+    console.log(`    [Kiwi MCP raw] ${raw.slice(0, 400)}`);
 
     // Extract price: €123 or EUR 123
-    const priceMatch = raw.match(/[€\u20ac]\s*(\d+(?:[.,]\d+)?)|EUR\s*(\d+(?:[.,]\d+)?)/i);
+    const priceMatch = raw.match(/[€]\s*(\d+(?:[.,]\d+)?)|EUR\s*(\d+(?:[.,]\d+)?)/i);
     const price = priceMatch
       ? parseFloat((priceMatch[1] || priceMatch[2]).replace(',', '.'))
       : null;
@@ -56,19 +57,6 @@ function addDays(dateStr, days) {
   return d.toISOString().split('T')[0];
 }
 
-/**
- * Search outbound + return flights for all configured origins.
- * Takes the cheapest result across all origin airports.
- * Always resolves — never throws.
- *
- * @param {string[]} origins         - IATA codes of departure airports e.g. ['BRU','CRL']
- * @param {string}   destinationIata - IATA code of camper pickup city
- * @param {string}   pickupDate      - YYYY-MM-DD
- * @param {string}   dropoffDate     - YYYY-MM-DD
- * @param {object}   departureWindow - { daysBefore }
- * @param {object}   returnWindow    - { daysAfter }
- * @returns {{ outbound, inbound, flightError }}
- */
 async function getFlightsForRoute(origins, destinationIata, pickupDate, dropoffDate, departureWindow, returnWindow) {
   try {
     const outboundDate = addDays(pickupDate, -(departureWindow.daysBefore || 0));
@@ -77,30 +65,20 @@ async function getFlightsForRoute(origins, destinationIata, pickupDate, dropoffD
     console.log(`    [Flights] Outbound: ${origins.join('/')} → ${destinationIata} op ${outboundDate}`);
     console.log(`    [Flights] Inbound:  ${destinationIata} → ${origins.join('/')} op ${inboundDate}`);
 
-    // Search all origins in parallel, pick the cheapest
     const outboundResults = await Promise.all(
-      origins.map(origin => callKiwiMcp({
-        trip_type: 'one-way',
-        origin,
-        destination: destinationIata,
-        dates: outboundDate,
-        flexibility: departureWindow.daysBefore || 0,
-        passengers: { adults: 1 }
-      }).catch(e => { console.error(`    [Flights] outbound error (${origin}): ${e.message}`); return null; }))
+      origins.map(origin =>
+        callKiwiMcp(origin, destinationIata, outboundDate)
+          .catch(e => { console.error(`    [Flights] outbound error (${origin}): ${e.message}`); return null; })
+      )
     );
 
     const inboundResults = await Promise.all(
-      origins.map(origin => callKiwiMcp({
-        trip_type: 'one-way',
-        origin: destinationIata,
-        destination: origin,
-        dates: inboundDate,
-        flexibility: returnWindow.daysAfter || 0,
-        passengers: { adults: 1 }
-      }).catch(e => { console.error(`    [Flights] inbound error (${origin}): ${e.message}`); return null; }))
+      origins.map(origin =>
+        callKiwiMcp(destinationIata, origin, inboundDate)
+          .catch(e => { console.error(`    [Flights] inbound error (${origin}): ${e.message}`); return null; })
+      )
     );
 
-    // Pick cheapest across all origins
     const bestOutbound = outboundResults
       .map((r, i) => r ? { ...r, origin: origins[i], destination: destinationIata } : null)
       .filter(Boolean)
