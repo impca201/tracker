@@ -2,6 +2,7 @@ const fs = require('fs');
 const nodemailer = require('nodemailer');
 const config = require('./config');
 const { stations, countryNames } = require('./stations.json');
+const { getFlightsForRoute } = require('./flights');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -22,13 +23,18 @@ function formatRouteLabel(routeId) {
   return `${from.name} (${from.country}) -> ${to.name} (${to.country})`;
 }
 
+function flightsEnabled() {
+  const f = config.flights;
+  return f && Array.isArray(f.origins) && f.origins.length > 0 && process.env.KIWI_API_KEY;
+}
+
 async function fetchQuiet(url, routeId, errors, retries = config.settings.maxRetries || 3) {
   for (let i = 0; i < retries; i++) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10-second timeout per request
-    
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
     try {
-      const res = await fetch(url, { 
+      const res = await fetch(url, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           "x-requested-alias": "rally.timeframes",
@@ -55,7 +61,6 @@ async function fetchQuiet(url, routeId, errors, retries = config.settings.maxRet
           errors.push({ routeId, status: res.status, message: msg });
           return { rateLimited: true };
         }
-        
         console.warn(`[Warning] Attempt ${i + 1} failed: ${msg}`);
         if (i === retries - 1) {
           errors.push({ routeId, status: res.status, message: msg });
@@ -67,29 +72,52 @@ async function fetchQuiet(url, routeId, errors, retries = config.settings.maxRet
       const isTimeout = e.name === 'AbortError';
       const msg = isTimeout ? `Timeout (10s) while fetching API` : `Error while fetching API: ${e.message}`;
       console.error(`[Error] Attempt ${i + 1} failed: ${msg}`);
-      
       if (i === retries - 1) {
         errors.push({ routeId, status: null, message: msg });
         return null;
       }
     }
-    
-    // Exponential backoff before a retry
+
     await sleep(2000 * (i + 1));
   }
   return null;
+}
+
+function formatFlightBlock(outbound, inbound, flightError) {
+  if (flightError) {
+    return `<p style="color:#c0392b; font-size:0.9em;">⚠️ Vluchtprijzen konden niet worden opgehaald: ${flightError}</p>`;
+  }
+  const lines = [];
+  if (outbound) {
+    lines.push(`✈️ <strong>Heen</strong>: ${outbound.origin} → ${outbound.destination} &mdash; <strong>€${outbound.price}</strong> &nbsp;<a href="${outbound.deep_link}" style="color:#007BFF;">bekijk vlucht</a>`);
+  } else {
+    lines.push(`✈️ <strong>Heen</strong>: geen vlucht gevonden binnen zoekvenster`);
+  }
+  if (inbound) {
+    lines.push(`✈️ <strong>Terug</strong>: ${inbound.origin} → ${inbound.destination} &mdash; <strong>€${inbound.price}</strong> &nbsp;<a href="${inbound.deep_link}" style="color:#007BFF;">bekijk vlucht</a>`);
+  } else {
+    lines.push(`✈️ <strong>Terug</strong>: geen vlucht gevonden binnen zoekvenster`);
+  }
+  return `<p style="margin:4px 0 0;">${lines.join('<br>')}</p>`;
 }
 
 async function run() {
   console.log('Tracker started...');
   const configured = Array.isArray(config.cities) ? config.cities : [];
   const selectedCityIds = new Set(configured.filter(id => typeof id === 'number' && stations[id]));
-  
+
   if (selectedCityIds.size === 0) {
     console.log('No cities selected in config.js. The script is stopping.');
     return;
   }
-  
+
+  const useFlights = flightsEnabled();
+  if (useFlights) {
+    console.log(`Flight search enabled. Origins: ${config.flights.origins.join(', ')}`);
+  } else {
+    console.log('Flight search disabled (no origins configured or KIWI_API_KEY missing).');
+  }
+
   let history = [];
   try {
     if (fs.existsSync('history.json')) {
@@ -101,19 +129,15 @@ async function run() {
     history = [];
   }
 
-  // Clean up old history entries (rallies older than 7 days)
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
   const cutoffDate = new Date(today);
   cutoffDate.setDate(today.getDate() - 7);
   history = history.filter(entry => {
-    // Expected format: "1-2_2025-05-01"
     const parts = entry.split('_');
     if (parts.length > 1) {
       const startDate = new Date(parts[1]);
-      if (startDate < cutoffDate) {
-        return false;
-      }
+      if (startDate < cutoffDate) return false;
     }
     return true;
   });
@@ -128,7 +152,6 @@ async function run() {
     }
   }
 
-  // Shuffle the array so that if we hit rate limits, we don't always miss the routes at the end
   for (let i = routesToCheck.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [routesToCheck[i], routesToCheck[j]] = [routesToCheck[j], routesToCheck[i]];
@@ -151,20 +174,16 @@ async function run() {
     const url = `${process.env.API_BASE_URL}${routeId}`;
     const data = await fetchQuiet(url, routeId, errors, config.settings.maxRetries || 3);
 
-    // Break out of the check loop immediately on rate limit
     if (data && data.rateLimited) {
       console.log('Scraping aborted due to rate limit (429). Proceeding to send results gathered so far.');
-      break; 
+      break;
     }
 
-    if (delayTime > 0) {
-      await sleep(delayTime);
-    }
-    
+    if (delayTime > 0) await sleep(delayTime);
+
     if (Array.isArray(data) && data.length > 0) {
       for (const timeframe of data) {
         if (!timeframe.startDate || !timeframe.endDate) continue;
-
         const uniqueKey = `${routeId}_${timeframe.startDate}`;
         if (!historySet.has(uniqueKey) && !found.find(f => f.uniqueKey === uniqueKey)) {
           console.log(`✅ New route found: ${stationFrom.name} -> ${stationTo.name}`);
@@ -174,18 +193,15 @@ async function run() {
     }
   }
 
-  // Determine whether we have real errors NOT related to 429 rate limits
   const criticalErrors = errors.filter(e => e.status !== 429);
   const hadErrors = criticalErrors.length > 0;
 
   if (found.length === 0 && !hadErrors) {
-    // Always persist state (and sort alphabetically to reduce Git diff noise)
     fs.writeFileSync('history.json', JSON.stringify([...historySet].sort(), null, 2));
     console.log('No new routes found and no critical API errors. No email sent.');
     return;
   }
 
-  // HTML for results
   const blocks = [];
   if (found.length > 0) {
     const grouped = new Map();
@@ -193,21 +209,38 @@ async function run() {
       const stationFrom = getStationById(r.fromId);
       const stationTo = getStationById(r.toId);
       const title = countryNames[stationFrom.country] || stationFrom.country;
-      
       if (!grouped.has(title)) grouped.set(title, []);
       grouped.get(title).push({ ...r, stationFrom, stationTo });
     }
 
     for (const [groupTitle, items] of Array.from(grouped.entries()).sort()) {
-      const lines = items.map(r => 
-        `<strong>🚐 ${r.stationFrom.name} (${r.stationFrom.country}) -> ${r.stationTo.name} (${r.stationTo.country})</strong><br>` +
-        `📅 ${formatDate(r.startDate)} to ${formatDate(r.endDate)}`
-      );
-      blocks.push(`<h3 style="margin: 16px 0 8px;">${groupTitle}</h3><p>${lines.join('<br><br>')}</p>`);
+      const lines = [];
+      for (const r of items) {
+        let flightHtml = '';
+        if (useFlights && r.stationTo.iata) {
+          console.log(`  ✈️  Fetching flights for ${r.stationFrom.name} → ${r.stationTo.name} (${r.stationTo.iata})`);
+          const flightResult = await getFlightsForRoute(
+            config.flights.origins,
+            r.stationTo.iata,
+            r.startDate,
+            r.endDate,
+            config.flights.departureWindow,
+            config.flights.returnWindow
+          );
+          flightHtml = formatFlightBlock(flightResult.outbound, flightResult.inbound, flightResult.flightError);
+        }
+        lines.push(
+          `<div style="margin-bottom:16px;">` +
+          `<strong>🚐 ${r.stationFrom.name} (${r.stationFrom.country}) -> ${r.stationTo.name} (${r.stationTo.country})</strong><br>` +
+          `📅 ${formatDate(r.startDate)} to ${formatDate(r.endDate)}` +
+          (flightHtml ? `<br>${flightHtml}` : '') +
+          `</div>`
+        );
+      }
+      blocks.push(`<h3 style="margin: 16px 0 8px;">${groupTitle}</h3>${lines.join('')}`);
     }
   }
 
-  // HTML for errors (use criticalErrors to avoid 429-related spam)
   let errorBlock = '';
   if (hadErrors) {
     const lines = criticalErrors.map(e => {
@@ -215,22 +248,17 @@ async function run() {
       const status = e.status !== null ? ` (status: ${e.status})` : '';
       return `• ${route}${status}: ${e.message}`;
     });
-    errorBlock = `<h3 style="margin: 24px 0 8px; color: #c0392b;">⚠️ Warning: problems fetching from the API</h3>` +
-                 `<p>Not all routes could be successfully fetched. This could be due to a timeout or downtime. Details:</p>` +
-                 `<p style="font-family: monospace;">${lines.join('<br>')}</p>`;
+    errorBlock =
+      `<h3 style="margin: 24px 0 8px; color: #c0392b;">⚠️ Warning: problems fetching from the API</h3>` +
+      `<p>Not all routes could be successfully fetched. Details:</p>` +
+      `<p style="font-family: monospace;">${lines.join('<br>')}</p>`;
   }
 
-  // Determine email subject
   let subject;
-  if (found.length > 0 && !hadErrors) {
-    subject = `🚐 ${found.length} routes available!`;
-  } else if (found.length > 0 && hadErrors) {
-    subject = `🚐 ${found.length} routes (with warnings)`;
-  } else {
-    subject = `⚠️ Camper Tracker: API problems`;
-  }
+  if (found.length > 0 && !hadErrors) subject = `🚐 ${found.length} routes available!`;
+  else if (found.length > 0 && hadErrors) subject = `🚐 ${found.length} routes (with warnings)`;
+  else subject = `⚠️ Camper Tracker: API problems`;
 
-  // Build email body
   let body = '';
   if (found.length > 0) {
     body += `<p>Hi!</p><p>New routes have just become available:</p>${blocks.join('')}`;
@@ -238,10 +266,7 @@ async function run() {
   } else {
     body += `<p>Hi!</p><p>No new routes could be found this time, but error(s) occurred while fetching data.</p>`;
   }
-
-  if (hadErrors) {
-    body += errorBlock;
-  }
+  if (hadErrors) body += errorBlock;
 
   const transporter = nodemailer.createTransport({
     service: 'gmail',
@@ -256,16 +281,11 @@ async function run() {
       html: body
     });
     console.log('Email sent successfully!');
-
-    // Only add to history if email was successfully sent
-    for (const r of found) {
-      historySet.add(r.uniqueKey);
-    }
+    for (const r of found) historySet.add(r.uniqueKey);
   } catch (e) {
     console.error('[Error] Mail failed:', e.message);
   }
 
-  // Persist state after attempting to send the email
   fs.writeFileSync('history.json', JSON.stringify([...historySet].sort(), null, 2));
 }
 

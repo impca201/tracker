@@ -161,6 +161,26 @@ module.exports = {
     // 99,  // Winnebago Industries
   ],
 
+  // Flight search settings (Kiwi Tequila API)
+  // Leave origins empty [] to disable flight search entirely.
+  flights: {
+    // IATA codes of your departure airports (city codes cover all airports in that city)
+    // Examples: 'BRU' = Brussels-Zaventem, 'CRL' = Charleroi
+    origins: ['BRU', 'CRL'],
+
+    // Search window for the outbound flight (relative to camper pickup date)
+    departureWindow: {
+      daysBefore: 1,        // Also search the day before pickup
+      latestArrivalHour: 16 // Only flights arriving by 16:00 on pickup day
+    },
+
+    // Search window for the return flight (relative to camper drop-off date)
+    returnWindow: {
+      daysAfter: 1,             // Also search the day after drop-off
+      earliestDepartureHour: 12 // Only flights departing from 12:00 on drop-off day
+    }
+  },
+
   // Technical settings:
   settings: {
     maxRetries: 3,    // Number of attempts for a failed API call
