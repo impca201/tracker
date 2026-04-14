@@ -11,7 +11,7 @@ jobs:
   run-tracker:
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # Added: allow pushing history.json
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -31,7 +31,6 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           API_BASE_URL: ${{ secrets.API_BASE_URL }}
           BOOKING_URL: ${{ secrets.BOOKING_URL }}
-          TRAVELPAYOUTS_TOKEN: ${{ secrets.TRAVELPAYOUTS_TOKEN }}
         run: node index.js
 
       - name: Commit history
@@ -39,5 +38,4 @@ jobs:
           git config --global user.name "GitHub Action Bot"
           git config --global user.email "action@github.com"
           git add history.json
-          # Check whether there are changes in history.json
           git diff --quiet && git diff --staged --quiet || (git commit -m "Update history [skip ci]" && git pull --rebase && git push)

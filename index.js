@@ -25,7 +25,7 @@ function formatRouteLabel(routeId) {
 
 function flightsEnabled() {
   const f = config.flights;
-  return f && Array.isArray(f.origins) && f.origins.length > 0 && process.env.TRAVELPAYOUTS_TOKEN;
+  return f && Array.isArray(f.origins) && f.origins.length > 0;
 }
 
 async function fetchQuiet(url, routeId, errors, retries = config.settings.maxRetries || 3) {
@@ -91,14 +91,14 @@ function formatFlightBlock(outbound, inbound, flightError) {
   if (outbound) {
     lines.push(`✈️ <strong>Heen</strong>: ${outbound.origin} → ${outbound.destination} &mdash; <strong>€${outbound.price}</strong> &nbsp;<a href="${outbound.link}" style="color:#007BFF;">bekijk vlucht</a>`);
   } else {
-    lines.push(`✈️ <strong>Heen</strong>: geen vlucht gevonden binnen zoekvenster`);
+    lines.push(`✈️ <strong>Heen</strong>: geen vlucht gevonden`);
   }
   if (inbound) {
     lines.push(`✈️ <strong>Terug</strong>: ${inbound.origin} → ${inbound.destination} &mdash; <strong>€${inbound.price}</strong> &nbsp;<a href="${inbound.link}" style="color:#007BFF;">bekijk vlucht</a>`);
   } else {
-    lines.push(`✈️ <strong>Terug</strong>: geen vlucht gevonden binnen zoekvenster`);
+    lines.push(`✈️ <strong>Terug</strong>: geen vlucht gevonden`);
   }
-  lines.push(`<em style="color:#888; font-size:0.85em;">ℹ️ Vluchtprijzen zijn indicatief op basis van zoekopdrachten van de laatste 48 uur.</em>`);
+  lines.push(`<em style="color:#888; font-size:0.85em;">ℹ️ Vluchtprijzen via Kiwi.com — controleer beschikbaarheid voor boeking.</em>`);
   return `<p style="margin:4px 0 0;">${lines.join('<br>')}</p>`;
 }
 
@@ -116,7 +116,7 @@ async function run() {
   if (useFlights) {
     console.log(`Flight search enabled. Origins: ${config.flights.origins.join(', ')}`);
   } else {
-    console.log('Flight search disabled (no origins configured or TRAVELPAYOUTS_TOKEN missing).');
+    console.log('Flight search disabled (no origins configured).');
   }
 
   let history = [];
