@@ -10,6 +10,7 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "nodemailer": "^6.9.11"
+    "nodemailer": "^6.9.11",
+    "@modelcontextprotocol/sdk": "^1.0.0"
   }
 }

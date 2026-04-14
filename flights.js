@@ -1,16 +1,56 @@
-// flights.js — Travelpayouts (Aviasales) Data API integration
-// Looks up the cheapest flight for a given route and date window.
-// Returns null (with a flightError) if the API is unavailable — the main job continues regardless.
-//
-// API docs: https://support.travelpayouts.com/hc/en-us/articles/203956163
-// Register: https://travelpayouts.com → Programmes → Data API
-// GitHub Secret needed: TRAVELPAYOUTS_TOKEN
+// flights.js — Kiwi.com MCP client
+// Calls the official Kiwi MCP server at https://mcp.kiwi.com using the MCP SDK.
+// No API key needed. Realtime prices via the search-flight tool.
+// Always resolves — never throws. On error, returns a flightError string.
 
-const BASE = 'https://api.travelpayouts.com';
+const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
 
-function toYearMonth(dateStr) {
-  // Returns "YYYY-MM" from "YYYY-MM-DD"
-  return dateStr.slice(0, 7);
+const KIWI_MCP_URL = 'https://mcp.kiwi.com';
+
+/**
+ * Create a fresh MCP client, connect, call search-flight, disconnect.
+ * @param {object} args  - Arguments for the search-flight tool
+ * @returns {object|null} Parsed first result or null
+ */
+async function callKiwiMcp(args) {
+  const client = new Client(
+    { name: 'camper-tracker', version: '1.0.0' },
+    { capabilities: {} }
+  );
+
+  const transport = new StreamableHTTPClientTransport(
+    new URL(KIWI_MCP_URL)
+  );
+
+  await client.connect(transport);
+
+  try {
+    const result = await client.callTool({
+      name: 'search-flight',
+      arguments: args
+    });
+
+    // Result content is an array of content blocks; first is text with JSON or markdown
+    const raw = result?.content?.[0]?.text;
+    if (!raw) return null;
+
+    // Try to extract the cheapest flight from the returned text
+    // The server returns a markdown table or JSON-like structure
+    // We look for the first price in euros (e.g. €123 or EUR 123)
+    const priceMatch = raw.match(/[€$]\s*(\d+(?:[.,]\d+)?)|EUR\s*(\d+(?:[.,]\d+)?)/i);
+    const price = priceMatch
+      ? parseFloat((priceMatch[1] || priceMatch[2]).replace(',', '.'))
+      : null;
+
+    // Extract booking link (shortened kiwi link)
+    const linkMatch = raw.match(/https?:\/\/(?:www\.)?(?:kiwi\.com|go\.kiwi\.com|kiw\.i)[^\s)>"']+/);
+    const link = linkMatch ? linkMatch[0] : `https://www.kiwi.com`;
+
+    return price ? { price, link, raw } : null;
+  } finally {
+    await client.close();
+  }
 }
 
 function addDays(dateStr, days) {
@@ -20,107 +60,53 @@ function addDays(dateStr, days) {
 }
 
 /**
- * Search for the cheapest one-way flight using the /v1/prices/cheap endpoint.
- * Prices come from Travelpayouts cache (last 48h searches).
- *
- * @param {string[]} fromCodes   - Origin IATA codes (city codes preferred)
- * @param {string}   toCode      - Destination city IATA code
- * @param {string}   dateFrom    - Earliest departure date (YYYY-MM-DD)
- * @param {string}   dateTo      - Latest departure date  (YYYY-MM-DD)
- * @returns {{ price, origin, destination, departure_at, link }|null}
- */
-async function searchFlight(fromCodes, toCode, dateFrom, dateTo) {
-  const token = process.env.TRAVELPAYOUTS_TOKEN;
-  if (!token) throw new Error('TRAVELPAYOUTS_TOKEN secret is not set.');
-
-  // The /v1/prices/cheap endpoint filters by month; pick the month of dateFrom.
-  const departMonth = toYearMonth(dateFrom);
-
-  // Try each origin code and return the cheapest result found
-  let best = null;
-
-  for (const origin of fromCodes) {
-    const params = new URLSearchParams({
-      origin,
-      destination: toCode,
-      depart_date: departMonth,
-      one_way: 'true',
-      currency: 'eur',
-      token
-    });
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-    try {
-      const res = await fetch(`${BASE}/v1/prices/cheap?${params}`, {
-        headers: { 'Accept': 'application/json' },
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-
-      if (!res.ok) throw new Error(`Travelpayouts API status ${res.status}`);
-
-      const json = await res.json();
-      if (!json.success || !json.data || !json.data[toCode]) continue;
-
-      // data[toCode] is an object keyed by sequence number { "0": {...}, "1": {...} }
-      const tickets = Object.values(json.data[toCode]);
-
-      // Filter to tickets within our date window and pick cheapest
-      const inWindow = tickets.filter(t => {
-        if (!t.departure_at) return false;
-        const dep = t.departure_at.slice(0, 10);
-        return dep >= dateFrom && dep <= dateTo;
-      });
-
-      const candidate = inWindow.sort((a, b) => a.price - b.price)[0] || null;
-      if (candidate && (!best || candidate.price < best.price)) {
-        best = {
-          price: candidate.price,
-          origin,
-          destination: toCode,
-          departure_at: candidate.departure_at,
-          link: `https://www.kiwi.com/en/search/results/${origin}/${toCode}/${departMonth.replace('-', '')}/no-return`
-        };
-      }
-    } catch (e) {
-      clearTimeout(timeoutId);
-      throw e;
-    }
-  }
-
-  return best;
-}
-
-/**
  * Look up outbound + return flights for a found camper route.
- * Always resolves — never throws. On API error, returns a flightError string.
+ * Always resolves — never throws. On error, returns a flightError string.
  *
- * @param {string[]} origins          - Departure airport IATA codes from config.flights.origins
+ * @param {string[]} origins          - Departure airport IATA codes
  * @param {string}   destinationIata  - IATA code of the camper pickup city
  * @param {string}   pickupDate       - Camper pickup date (YYYY-MM-DD)
  * @param {string}   dropoffDate      - Camper drop-off date (YYYY-MM-DD)
- * @param {object}   departureWindow  - { daysBefore, latestArrivalHour }
- * @param {object}   returnWindow     - { daysAfter, earliestDepartureHour }
+ * @param {object}   departureWindow  - { daysBefore }
+ * @param {object}   returnWindow     - { daysAfter }
  * @returns {{ outbound, inbound, flightError }}
  */
 async function getFlightsForRoute(origins, destinationIata, pickupDate, dropoffDate, departureWindow, returnWindow) {
   try {
-    const outboundDateFrom = addDays(pickupDate, -departureWindow.daysBefore);
-    const outboundDateTo   = pickupDate;
+    const outboundDate = addDays(pickupDate, -departureWindow.daysBefore);
+    const inboundDate  = addDays(dropoffDate, returnWindow.daysAfter);
 
-    const inboundDateFrom  = dropoffDate;
-    const inboundDateTo    = addDays(dropoffDate, returnWindow.daysAfter);
-
-    const [outbound, inbound] = await Promise.all([
-      searchFlight(origins, destinationIata, outboundDateFrom, outboundDateTo),
-      searchFlight([destinationIata], origins[0], inboundDateFrom, inboundDateTo)
+    // Run outbound and inbound searches in parallel
+    const [outboundRaw, inboundRaw] = await Promise.all([
+      callKiwiMcp({
+        trip_type: 'one-way',
+        origin: origins[0],
+        destination: destinationIata,
+        dates: outboundDate,
+        flexibility: departureWindow.daysBefore,
+        passengers: { adults: 1 }
+      }),
+      callKiwiMcp({
+        trip_type: 'one-way',
+        origin: destinationIata,
+        destination: origins[0],
+        dates: inboundDate,
+        flexibility: returnWindow.daysAfter,
+        passengers: { adults: 1 }
+      })
     ]);
+
+    const outbound = outboundRaw
+      ? { price: outboundRaw.price, origin: origins[0], destination: destinationIata, link: outboundRaw.link }
+      : null;
+
+    const inbound = inboundRaw
+      ? { price: inboundRaw.price, origin: destinationIata, destination: origins[0], link: inboundRaw.link }
+      : null;
 
     return { outbound, inbound, flightError: null };
   } catch (e) {
-    console.error(`[Flights] Error fetching flights: ${e.message}`);
+    console.error(`[Flights] Kiwi MCP error: ${e.message}`);
     return { outbound: null, inbound: null, flightError: e.message };
   }
 }
