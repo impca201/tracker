@@ -22,8 +22,15 @@ async function callKiwiMcp(args) {
 
   try {
     const result = await client.callTool({ name: 'search-flight', arguments: args });
+
+    // Log volledige result structuur voor debugging
+    console.log(`    [Kiwi MCP result] ${JSON.stringify(result).slice(0, 500)}`);
+
     const raw = result?.content?.[0]?.text;
-    if (!raw) return null;
+    if (!raw) {
+      console.log(`    [Kiwi MCP] Geen tekst in content[0]. Keys: ${Object.keys(result || {}).join(', ')}`);
+      return null;
+    }
 
     console.log(`    [Kiwi MCP raw] ${raw.slice(0, 300)}`);
 
@@ -67,6 +74,9 @@ async function getFlightsForRoute(origins, destinationIata, pickupDate, dropoffD
     const outboundDate = addDays(pickupDate, -(departureWindow.daysBefore || 0));
     const inboundDate  = addDays(dropoffDate, returnWindow.daysAfter || 0);
 
+    console.log(`    [Flights] Outbound: ${origins.join('/')} → ${destinationIata} op ${outboundDate}`);
+    console.log(`    [Flights] Inbound:  ${destinationIata} → ${origins.join('/')} op ${inboundDate}`);
+
     // Search all origins in parallel, pick the cheapest
     const outboundResults = await Promise.all(
       origins.map(origin => callKiwiMcp({
@@ -76,7 +86,7 @@ async function getFlightsForRoute(origins, destinationIata, pickupDate, dropoffD
         dates: outboundDate,
         flexibility: departureWindow.daysBefore || 0,
         passengers: { adults: 1 }
-      }).catch(() => null))
+      }).catch(e => { console.error(`    [Flights] outbound error (${origin}): ${e.message}`); return null; }))
     );
 
     const inboundResults = await Promise.all(
@@ -87,7 +97,7 @@ async function getFlightsForRoute(origins, destinationIata, pickupDate, dropoffD
         dates: inboundDate,
         flexibility: returnWindow.daysAfter || 0,
         passengers: { adults: 1 }
-      }).catch(() => null))
+      }).catch(e => { console.error(`    [Flights] inbound error (${origin}): ${e.message}`); return null; }))
     );
 
     // Pick cheapest across all origins
