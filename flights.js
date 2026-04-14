@@ -19,12 +19,7 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate) {
   try {
     const result = await client.callTool({
       name: 'search-flight',
-      arguments: {
-        flyFrom,
-        flyTo,
-        departureDate,
-        adults: 1
-      }
+      arguments: { flyFrom, flyTo, departureDate, adults: 1 }
     });
 
     const raw = result?.content?.[0]?.text;
@@ -35,13 +30,11 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate) {
 
     console.log(`    [Kiwi MCP raw] ${raw.slice(0, 400)}`);
 
-    // Extract price: €123 or EUR 123
     const priceMatch = raw.match(/[€]\s*(\d+(?:[.,]\d+)?)|EUR\s*(\d+(?:[.,]\d+)?)/i);
     const price = priceMatch
       ? parseFloat((priceMatch[1] || priceMatch[2]).replace(',', '.'))
       : null;
 
-    // Extract booking link
     const linkMatch = raw.match(/https?:\/\/[^\s)>"']*kiwi\.com[^\s)>"']*/i);
     const link = linkMatch ? linkMatch[0] : 'https://www.kiwi.com';
 
@@ -54,7 +47,11 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate) {
 function addDays(dateStr, days) {
   const d = new Date(dateStr);
   d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().split('T')[0];
+  // Kiwi MCP verwacht dd/mm/yyyy
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const yyyy = d.getUTCFullYear();
+  return `${dd}/${mm}/${yyyy}`;
 }
 
 async function getFlightsForRoute(origins, destinationIata, pickupDate, dropoffDate, departureWindow, returnWindow) {
