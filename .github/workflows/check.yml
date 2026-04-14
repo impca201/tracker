@@ -31,6 +31,7 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           API_BASE_URL: ${{ secrets.API_BASE_URL }}
           BOOKING_URL: ${{ secrets.BOOKING_URL }}
+          TRAVELPAYOUTS_TOKEN: ${{ secrets.TRAVELPAYOUTS_TOKEN }}
         run: node index.js
 
       - name: Commit history
