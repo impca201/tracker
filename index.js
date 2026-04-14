@@ -25,7 +25,7 @@ function formatRouteLabel(routeId) {
 
 function flightsEnabled() {
   const f = config.flights;
-  return f && Array.isArray(f.origins) && f.origins.length > 0 && process.env.KIWI_API_KEY;
+  return f && Array.isArray(f.origins) && f.origins.length > 0 && process.env.TRAVELPAYOUTS_TOKEN;
 }
 
 async function fetchQuiet(url, routeId, errors, retries = config.settings.maxRetries || 3) {
@@ -89,15 +89,16 @@ function formatFlightBlock(outbound, inbound, flightError) {
   }
   const lines = [];
   if (outbound) {
-    lines.push(`✈️ <strong>Heen</strong>: ${outbound.origin} → ${outbound.destination} &mdash; <strong>€${outbound.price}</strong> &nbsp;<a href="${outbound.deep_link}" style="color:#007BFF;">bekijk vlucht</a>`);
+    lines.push(`✈️ <strong>Heen</strong>: ${outbound.origin} → ${outbound.destination} &mdash; <strong>€${outbound.price}</strong> &nbsp;<a href="${outbound.link}" style="color:#007BFF;">bekijk vlucht</a>`);
   } else {
     lines.push(`✈️ <strong>Heen</strong>: geen vlucht gevonden binnen zoekvenster`);
   }
   if (inbound) {
-    lines.push(`✈️ <strong>Terug</strong>: ${inbound.origin} → ${inbound.destination} &mdash; <strong>€${inbound.price}</strong> &nbsp;<a href="${inbound.deep_link}" style="color:#007BFF;">bekijk vlucht</a>`);
+    lines.push(`✈️ <strong>Terug</strong>: ${inbound.origin} → ${inbound.destination} &mdash; <strong>€${inbound.price}</strong> &nbsp;<a href="${inbound.link}" style="color:#007BFF;">bekijk vlucht</a>`);
   } else {
     lines.push(`✈️ <strong>Terug</strong>: geen vlucht gevonden binnen zoekvenster`);
   }
+  lines.push(`<em style="color:#888; font-size:0.85em;">ℹ️ Vluchtprijzen zijn indicatief op basis van zoekopdrachten van de laatste 48 uur.</em>`);
   return `<p style="margin:4px 0 0;">${lines.join('<br>')}</p>`;
 }
 
@@ -115,7 +116,7 @@ async function run() {
   if (useFlights) {
     console.log(`Flight search enabled. Origins: ${config.flights.origins.join(', ')}`);
   } else {
-    console.log('Flight search disabled (no origins configured or KIWI_API_KEY missing).');
+    console.log('Flight search disabled (no origins configured or TRAVELPAYOUTS_TOKEN missing).');
   }
 
   let history = [];
