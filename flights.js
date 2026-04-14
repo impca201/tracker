@@ -28,7 +28,6 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate) {
       return null;
     }
 
-    // Response is a JSON array string
     let flights;
     try {
       flights = JSON.parse(raw);
@@ -39,7 +38,6 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate) {
 
     if (!Array.isArray(flights) || flights.length === 0) return null;
 
-    // Goedkoopste vlucht kiezen
     const best = flights.sort((a, b) => a.price - b.price)[0];
     const price = best.price;
     const link = best.deepLink || best.bookingLink || `https://www.kiwi.com/deep?from=${flyFrom}&to=${flyTo}&departure=${departureDate}`;
@@ -60,35 +58,48 @@ function addDays(dateStr, days) {
   return `${dd}/${mm}/${yyyy}`;
 }
 
-async function getFlightsForRoute(origins, destinationIata, pickupDate, dropoffDate, departureWindow, returnWindow) {
+/**
+ * Search outbound + return flights.
+ * Outbound: origins → pickupIata (camper ophalen)
+ * Inbound:  dropoffIata → origins (camper terugbrengen)
+ *
+ * @param {string[]} origins       - IATA codes van vertrekhavens e.g. ['BRU','CRL']
+ * @param {string}   pickupIata    - IATA van de stad waar je de camper ophaalt
+ * @param {string}   dropoffIata   - IATA van de stad waar je de camper terugbrengt
+ * @param {string}   pickupDate    - YYYY-MM-DD
+ * @param {string}   dropoffDate   - YYYY-MM-DD
+ * @param {object}   departureWindow - { daysBefore }
+ * @param {object}   returnWindow    - { daysAfter }
+ */
+async function getFlightsForRoute(origins, pickupIata, dropoffIata, pickupDate, dropoffDate, departureWindow, returnWindow) {
   try {
     const outboundDate = addDays(pickupDate, -(departureWindow.daysBefore || 0));
     const inboundDate  = addDays(dropoffDate, returnWindow.daysAfter || 0);
 
-    console.log(`    [Flights] Outbound: ${origins.join('/')} → ${destinationIata} op ${outboundDate}`);
-    console.log(`    [Flights] Inbound:  ${destinationIata} → ${origins.join('/')} op ${inboundDate}`);
+    console.log(`    [Flights] Outbound: ${origins.join('/')} → ${pickupIata} op ${outboundDate}`);
+    console.log(`    [Flights] Inbound:  ${dropoffIata} → ${origins.join('/')} op ${inboundDate}`);
 
     const outboundResults = await Promise.all(
       origins.map(origin =>
-        callKiwiMcp(origin, destinationIata, outboundDate)
+        callKiwiMcp(origin, pickupIata, outboundDate)
           .catch(e => { console.error(`    [Flights] outbound error (${origin}): ${e.message}`); return null; })
       )
     );
 
     const inboundResults = await Promise.all(
       origins.map(origin =>
-        callKiwiMcp(destinationIata, origin, inboundDate)
+        callKiwiMcp(dropoffIata, origin, inboundDate)
           .catch(e => { console.error(`    [Flights] inbound error (${origin}): ${e.message}`); return null; })
       )
     );
 
     const bestOutbound = outboundResults
-      .map((r, i) => r ? { ...r, origin: origins[i], destination: destinationIata } : null)
+      .map((r, i) => r ? { ...r, origin: origins[i], destination: pickupIata } : null)
       .filter(Boolean)
       .sort((a, b) => a.price - b.price)[0] || null;
 
     const bestInbound = inboundResults
-      .map((r, i) => r ? { ...r, origin: destinationIata, destination: origins[i] } : null)
+      .map((r, i) => r ? { ...r, origin: dropoffIata, destination: origins[i] } : null)
       .filter(Boolean)
       .sort((a, b) => a.price - b.price)[0] || null;
 

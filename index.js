@@ -209,7 +209,7 @@ async function run() {
     for (const r of found) {
       const stationFrom = getStationById(r.fromId);
       const stationTo = getStationById(r.toId);
-      const title = countryNames[stationFrom.country] || stationFrom.country;
+      const title = countryNames[stationTo.country] || stationTo.country;
       if (!grouped.has(title)) grouped.set(title, []);
       grouped.get(title).push({ ...r, stationFrom, stationTo });
     }
@@ -218,11 +218,13 @@ async function run() {
       const lines = [];
       for (const r of items) {
         let flightHtml = '';
-        if (useFlights && r.stationTo.iata) {
-          console.log(`  ✈️  Fetching flights for ${r.stationFrom.name} → ${r.stationTo.name} (${r.stationTo.iata})`);
+        // Beide steden moeten een IATA code hebben voor vluchten
+        if (useFlights && r.stationTo.iata && r.stationFrom.iata) {
+          console.log(`  ✈️  Fetching flights for ${r.stationFrom.name} → ${r.stationTo.name} (pickup: ${r.stationTo.iata}, dropoff: ${r.stationFrom.iata})`);
           const flightResult = await getFlightsForRoute(
             config.flights.origins,
-            r.stationTo.iata,
+            r.stationTo.iata,    // pickup: heen naar hier
+            r.stationFrom.iata,  // dropoff: terug vanuit hier
             r.startDate,
             r.endDate,
             config.flights.departureWindow,
