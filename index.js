@@ -83,23 +83,57 @@ async function fetchQuiet(url, routeId, errors, retries = config.settings.maxRet
   return null;
 }
 
+function formatFlightRow(flight, label) {
+  if (!flight) {
+    return `<tr>
+      <td style="padding:6px 10px; color:#888;"><strong>${label}</strong></td>
+      <td colspan="5" style="padding:6px 10px; color:#aaa; font-style:italic;">Geen rechtstreekse vlucht gevonden</td>
+    </tr>`;
+  }
+  const flightNoStr = flight.flightNo ? ` <span style="color:#888; font-size:0.85em;">(${flight.flightNo})</span>` : '';
+  return `<tr style="background:#f9f9f9;">
+    <td style="padding:6px 10px;"><strong>${label}</strong></td>
+    <td style="padding:6px 10px;">${flight.from} → ${flight.to}</td>
+    <td style="padding:6px 10px;">${flight.departure} – ${flight.arrival} <span style="color:#888; font-size:0.85em;">(${flight.duration})</span></td>
+    <td style="padding:6px 10px;">${flight.airline}${flightNoStr}</td>
+    <td style="padding:6px 10px; font-weight:bold; color:#27ae60;">€${flight.price}</td>
+    <td style="padding:6px 10px;"><a href="${flight.link}" style="color:#007BFF; white-space:nowrap;">Boek vlucht →</a></td>
+  </tr>`;
+}
+
 function formatFlightBlock(outbound, inbound, flightError) {
   if (flightError) {
-    return `<p style="color:#c0392b; font-size:0.9em;">⚠️ Vluchtprijzen konden niet worden opgehaald: ${flightError}</p>`;
+    return `<p style="color:#c0392b; font-size:0.9em; margin:4px 0;">⚠️ Vluchtprijzen konden niet worden opgehaald: ${flightError}</p>`;
   }
-  const lines = [];
-  if (outbound) {
-    lines.push(`✈️ <strong>Heen</strong>: ${outbound.origin} → ${outbound.destination} &mdash; <strong>€${outbound.price}</strong> &nbsp;<a href="${outbound.link}" style="color:#007BFF;">bekijk vlucht</a>`);
-  } else {
-    lines.push(`✈️ <strong>Heen</strong>: geen vlucht gevonden`);
-  }
-  if (inbound) {
-    lines.push(`✈️ <strong>Terug</strong>: ${inbound.origin} → ${inbound.destination} &mdash; <strong>€${inbound.price}</strong> &nbsp;<a href="${inbound.link}" style="color:#007BFF;">bekijk vlucht</a>`);
-  } else {
-    lines.push(`✈️ <strong>Terug</strong>: geen vlucht gevonden`);
-  }
-  lines.push(`<em style="color:#888; font-size:0.85em;">ℹ️ Vluchtprijzen via Kiwi.com — controleer beschikbaarheid voor boeking.</em>`);
-  return `<p style="margin:4px 0 0;">${lines.join('<br>')}</p>`;
+
+  const totalPrice = (outbound?.price || 0) + (inbound?.price || 0);
+  const totalStr = (outbound && inbound)
+    ? `<tr style="border-top:2px solid #ddd;">
+        <td colspan="4" style="padding:6px 10px; text-align:right; color:#555;"><em>Totaal heen + terug:</em></td>
+        <td style="padding:6px 10px; font-weight:bold; color:#27ae60; font-size:1.05em;">€${totalPrice}</td>
+        <td></td>
+      </tr>`
+    : '';
+
+  return `
+  <table style="border-collapse:collapse; width:100%; margin:8px 0; font-size:0.9em; border:1px solid #e0e0e0; border-radius:4px; overflow:hidden;">
+    <thead>
+      <tr style="background:#f0f0f0;">
+        <th style="padding:6px 10px; text-align:left;">Richting</th>
+        <th style="padding:6px 10px; text-align:left;">Route</th>
+        <th style="padding:6px 10px; text-align:left;">Tijden</th>
+        <th style="padding:6px 10px; text-align:left;">Maatschappij</th>
+        <th style="padding:6px 10px; text-align:left;">Prijs</th>
+        <th style="padding:6px 10px; text-align:left;"></th>
+      </tr>
+    </thead>
+    <tbody>
+      ${formatFlightRow(outbound, '✈️ Heen')}
+      ${formatFlightRow(inbound, '✈️ Terug')}
+      ${totalStr}
+    </tbody>
+  </table>
+  <p style="color:#888; font-size:0.8em; margin:2px 0 0;">ℹ️ Goedkoopste rechtstreekse vluchten via Kiwi.com — controleer beschikbaarheid voor boeking.</p>`;
 }
 
 async function run() {
@@ -218,13 +252,12 @@ async function run() {
       const lines = [];
       for (const r of items) {
         let flightHtml = '';
-        // Beide steden moeten een IATA code hebben voor vluchten
         if (useFlights && r.stationTo.iata && r.stationFrom.iata) {
           console.log(`  ✈️  Fetching flights for ${r.stationFrom.name} → ${r.stationTo.name} (pickup: ${r.stationTo.iata}, dropoff: ${r.stationFrom.iata})`);
           const flightResult = await getFlightsForRoute(
             config.flights.origins,
-            r.stationTo.iata,    // pickup: heen naar hier
-            r.stationFrom.iata,  // dropoff: terug vanuit hier
+            r.stationTo.iata,
+            r.stationFrom.iata,
             r.startDate,
             r.endDate,
             config.flights.departureWindow,
@@ -233,14 +266,14 @@ async function run() {
           flightHtml = formatFlightBlock(flightResult.outbound, flightResult.inbound, flightResult.flightError);
         }
         lines.push(
-          `<div style="margin-bottom:16px;">` +
-          `<strong>🚐 ${r.stationFrom.name} (${r.stationFrom.country}) -> ${r.stationTo.name} (${r.stationTo.country})</strong><br>` +
-          `📅 ${formatDate(r.startDate)} to ${formatDate(r.endDate)}` +
-          (flightHtml ? `<br>${flightHtml}` : '') +
+          `<div style="margin-bottom:20px; padding:12px 16px; background:#fff; border:1px solid #e0e0e0; border-radius:6px;">` +
+          `<p style="margin:0 0 4px;"><strong>🚐 ${r.stationFrom.name} (${r.stationFrom.country}) → ${r.stationTo.name} (${r.stationTo.country})</strong></p>` +
+          `<p style="margin:0 0 8px; color:#555;">📅 ${formatDate(r.startDate)} tot ${formatDate(r.endDate)}</p>` +
+          (flightHtml || '<p style="color:#aaa; font-style:italic;">Geen vluchtinfo beschikbaar.</p>') +
           `</div>`
         );
       }
-      blocks.push(`<h3 style="margin: 16px 0 8px;">${groupTitle}</h3>${lines.join('')}`);
+      blocks.push(`<h3 style="margin:20px 0 8px; border-bottom:2px solid #eee; padding-bottom:4px;">${groupTitle}</h3>${lines.join('')}`);
     }
   }
 
@@ -252,9 +285,9 @@ async function run() {
       return `• ${route}${status}: ${e.message}`;
     });
     errorBlock =
-      `<h3 style="margin: 24px 0 8px; color: #c0392b;">⚠️ Warning: problems fetching from the API</h3>` +
+      `<h3 style="margin:24px 0 8px; color:#c0392b;">⚠️ Warning: problems fetching from the API</h3>` +
       `<p>Not all routes could be successfully fetched. Details:</p>` +
-      `<p style="font-family: monospace;">${lines.join('<br>')}</p>`;
+      `<p style="font-family:monospace;">${lines.join('<br>')}</p>`;
   }
 
   let subject;
@@ -265,7 +298,7 @@ async function run() {
   let body = '';
   if (found.length > 0) {
     body += `<p>Hi!</p><p>New routes have just become available:</p>${blocks.join('')}`;
-    body += `<p>👉 <a href="${process.env.BOOKING_URL}" style="color: #007BFF; font-weight: bold; text-decoration: none;">Book quickly here on the website!</a></p>`;
+    body += `<p style="margin-top:20px;">👉 <a href="${process.env.BOOKING_URL}" style="color:#007BFF; font-weight:bold;">Book quickly here on the website!</a></p>`;
   } else {
     body += `<p>Hi!</p><p>No new routes could be found this time, but error(s) occurred while fetching data.</p>`;
   }

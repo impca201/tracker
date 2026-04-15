@@ -1,12 +1,60 @@
 // flights.js — Kiwi.com MCP client
-// Calls the official Kiwi MCP server at https://mcp.kiwi.com using the MCP SDK.
-// No API key needed. Realtime prices.
-// Always resolves — never throws. On error, returns a flightError string.
+// Directe vluchten only, volledige vluchtinfo (tijden, duur, airline, prijs)
 
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
 
 const KIWI_MCP_URL = 'https://mcp.kiwi.com';
+
+function formatLocalTime(isoString) {
+  if (!isoString) return '?';
+  // "2026-04-19T08:05:00.000" -> "08:05"
+  return isoString.slice(11, 16);
+}
+
+function formatDuration(seconds) {
+  if (!seconds) return '?';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${h}u${m > 0 ? m + 'm' : ''}`;
+}
+
+function isDirectFlight(flight) {
+  // Directe vlucht = route array heeft exact 1 segment
+  // én totalDurationInSeconds === durationInSeconds (geen overstaptijd)
+  if (Array.isArray(flight.route) && flight.route.length > 1) return false;
+  if (Array.isArray(flight.route) && flight.route.length === 1) return true;
+  // Fallback: als route niet beschikbaar, check duraties
+  return flight.totalDurationInSeconds === flight.durationInSeconds;
+}
+
+function extractFlightInfo(flight, flyFrom, flyTo) {
+  // Airline: uit route[0] of top-level
+  const segment = Array.isArray(flight.route) ? flight.route[0] : null;
+  const airline = segment?.airline || flight.airlines?.[0] || flight.airline || null;
+  const airlineName = segment?.airlineName || flight.airlineNames?.[0] || airline || 'Onbekend';
+  const flightNo = segment?.flight_no || segment?.flightNo || flight.flightNo || null;
+
+  const depLocal = segment?.utc_departure
+    ? null  // gebruik local van top-level als segment alleen UTC heeft
+    : null;
+
+  const depTime = formatLocalTime(flight.departure?.local || segment?.local_departure || segment?.localDeparture);
+  const arrTime = formatLocalTime(flight.arrival?.local || segment?.local_arrival || segment?.localArrival);
+  const duration = formatDuration(flight.durationInSeconds || flight.totalDurationInSeconds);
+
+  return {
+    price: flight.price,
+    airline: airlineName,
+    flightNo: flightNo,
+    departure: depTime,
+    arrival: arrTime,
+    duration: duration,
+    from: flight.flyFrom || flyFrom,
+    to: flight.flyTo || flyTo,
+    link: flight.deepLink || flight.bookingLink || `https://www.kiwi.com/deep?from=${flyFrom}&to=${flyTo}`
+  };
+}
 
 async function callKiwiMcp(flyFrom, flyTo, departureDate) {
   const client = new Client(
@@ -28,6 +76,15 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate) {
       return null;
     }
 
+    // Log volledige raw response voor debugging (1e vlucht)
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        console.log(`    [Kiwi MCP raw fields] ${flyFrom}->${flyTo}:`, JSON.stringify(Object.keys(parsed[0])));
+        if (parsed[0].route) console.log(`    [Kiwi MCP route[0] fields]:`, JSON.stringify(Object.keys(parsed[0].route[0] || {})));
+      }
+    } catch {}
+
     let flights;
     try {
       flights = JSON.parse(raw);
@@ -38,12 +95,17 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate) {
 
     if (!Array.isArray(flights) || flights.length === 0) return null;
 
-    const best = flights.sort((a, b) => a.price - b.price)[0];
-    const price = best.price;
-    const link = best.deepLink || best.bookingLink || `https://www.kiwi.com/deep?from=${flyFrom}&to=${flyTo}&departure=${departureDate}`;
+    // Filter op directe vluchten
+    const directFlights = flights.filter(isDirectFlight);
+    console.log(`    [Kiwi MCP] ${flyFrom}->${flyTo}: ${flights.length} vluchten, ${directFlights.length} rechtstreeks`);
 
-    console.log(`    [Kiwi MCP] Beste vlucht: ${flyFrom}->${flyTo} €${price}`);
-    return { price, link };
+    if (directFlights.length === 0) return null;
+
+    // Goedkoopste directe vlucht
+    const best = directFlights.sort((a, b) => a.price - b.price)[0];
+    const info = extractFlightInfo(best, flyFrom, flyTo);
+    console.log(`    [Kiwi MCP] Beste directe: ${flyFrom}->${flyTo} €${info.price} (${info.airline}, ${info.departure}-${info.arrival})`);
+    return info;
   } finally {
     await client.close();
   }
@@ -62,14 +124,6 @@ function addDays(dateStr, days) {
  * Search outbound + return flights.
  * Outbound: origins → pickupIata (camper ophalen)
  * Inbound:  dropoffIata → origins (camper terugbrengen)
- *
- * @param {string[]} origins       - IATA codes van vertrekhavens e.g. ['BRU','CRL']
- * @param {string}   pickupIata    - IATA van de stad waar je de camper ophaalt
- * @param {string}   dropoffIata   - IATA van de stad waar je de camper terugbrengt
- * @param {string}   pickupDate    - YYYY-MM-DD
- * @param {string}   dropoffDate   - YYYY-MM-DD
- * @param {object}   departureWindow - { daysBefore }
- * @param {object}   returnWindow    - { daysAfter }
  */
 async function getFlightsForRoute(origins, pickupIata, dropoffIata, pickupDate, dropoffDate, departureWindow, returnWindow) {
   try {
@@ -94,12 +148,10 @@ async function getFlightsForRoute(origins, pickupIata, dropoffIata, pickupDate, 
     );
 
     const bestOutbound = outboundResults
-      .map((r, i) => r ? { ...r, origin: origins[i], destination: pickupIata } : null)
       .filter(Boolean)
       .sort((a, b) => a.price - b.price)[0] || null;
 
     const bestInbound = inboundResults
-      .map((r, i) => r ? { ...r, origin: dropoffIata, destination: origins[i] } : null)
       .filter(Boolean)
       .sort((a, b) => a.price - b.price)[0] || null;
 
