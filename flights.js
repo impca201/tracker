@@ -1,15 +1,16 @@
 // flights.js — Kiwi.com MCP client
-// Directe vluchten only, volledige vluchtinfo (tijden, duur, airline, prijs)
+// Direct flights only, full flight info (times, duration, airline, price)
 
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
-// Fix #2: Use SSEClientTransport — StreamableHTTPClientTransport does not exist in @modelcontextprotocol/sdk v1.0.0
 const { SSEClientTransport } = require('@modelcontextprotocol/sdk/client/sse.js');
 
 const KIWI_MCP_URL = 'https://mcp.kiwi.com';
 
+// FIX: Hard cap — reject any flight longer than 6 hours regardless of stop count
+const MAX_DIRECT_FLIGHT_SECONDS = 6 * 3600; // 21600
+
 function formatLocalTime(isoString) {
   if (!isoString) return '?';
-  // "2026-04-19T08:05:00.000" -> "08:05"
   return isoString.slice(11, 16);
 }
 
@@ -17,11 +18,14 @@ function formatDuration(seconds) {
   if (!seconds) return '?';
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  return `${h}u${m > 0 ? m + 'm' : ''}`;
+  return `${h}h${m > 0 ? m + 'm' : ''}`;
 }
 
-// Fix #4: Strictly typed — avoids undefined === undefined false positive
 function isDirectFlight(flight) {
+  const durationSeconds = flight.durationInSeconds || flight.totalDurationInSeconds || 0;
+  // Reject anything over the max duration cap first
+  if (durationSeconds > MAX_DIRECT_FLIGHT_SECONDS) return false;
+  // Then check route segments
   if (flight.route && Array.isArray(flight.route)) return flight.route.length === 1;
   if (flight.totalDurationInSeconds !== undefined && flight.durationInSeconds !== undefined) {
     return flight.totalDurationInSeconds === flight.durationInSeconds;
@@ -29,12 +33,10 @@ function isDirectFlight(flight) {
   return false;
 }
 
-// Fix #6 & #7: Fallback to IATA code for airline name; accept departureDate and attach flightDate
 function extractFlightInfo(flight, flyFrom, flyTo, departureDate) {
   const segment = Array.isArray(flight.route) ? flight.route[0] : null;
-  // Fix #6: Graceful airline fallback — use IATA code if full name isn't mapped
   const airlineCode = segment?.airline || flight.airlines?.[0] || flight.airline || '';
-  const airlineName = segment?.airlineName || flight.airlineNames?.[0] || airlineCode || 'Onbekend';
+  const airlineName = segment?.airlineName || flight.airlineNames?.[0] || airlineCode || 'Unknown';
   const flightNo = segment?.flight_no || segment?.flightNo || flight.flightNo || null;
 
   const depTime = formatLocalTime(flight.departure?.local || segment?.local_departure || segment?.localDeparture);
@@ -51,7 +53,7 @@ function extractFlightInfo(flight, flyFrom, flyTo, departureDate) {
     from: flight.flyFrom || flyFrom,
     to: flight.flyTo || flyTo,
     link: flight.deepLink || flight.bookingLink || `https://www.kiwi.com/deep?from=${flyFrom}&to=${flyTo}`,
-    flightDate: departureDate || null  // Fix #7: Attach the searched date for display in email
+    flightDate: departureDate || null
   };
 }
 
@@ -77,32 +79,23 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate, timeFilter) {
 
     const raw = result?.content?.[0]?.text;
     if (!raw) {
-      console.log(`    [Kiwi MCP] Lege response voor ${flyFrom}->${flyTo} op ${departureDate}`);
+      console.log(`    [Kiwi MCP] Empty response for ${flyFrom}->${flyTo} on ${departureDate}`);
       return null;
     }
-
-    try {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        console.log(`    [Kiwi MCP raw fields] ${flyFrom}->${flyTo}:`, JSON.stringify(Object.keys(parsed[0])));
-        if (parsed[0].route) console.log(`    [Kiwi MCP route[0] fields]:`, JSON.stringify(Object.keys(parsed[0].route[0] || {})));
-      }
-    } catch {}
 
     let flights;
     try {
       flights = JSON.parse(raw);
     } catch {
-      console.log(`    [Kiwi MCP] Kon JSON niet parsen: ${raw.slice(0, 200)}`);
+      console.log(`    [Kiwi MCP] Could not parse JSON: ${raw.slice(0, 200)}`);
       return null;
     }
 
     if (!Array.isArray(flights) || flights.length === 0) return null;
 
     let directFlights = flights.filter(isDirectFlight);
-    console.log(`    [Kiwi MCP] ${flyFrom}->${flyTo}: ${flights.length} vluchten, ${directFlights.length} rechtstreeks`);
+    console.log(`    [Kiwi MCP] ${flyFrom}->${flyTo}: ${flights.length} flights total, ${directFlights.length} direct (under ${MAX_DIRECT_FLIGHT_SECONDS / 3600}h)`);
 
-    // Fix #5: Apply time filters if provided
     if (timeFilter) {
       if (timeFilter.latestArrivalHour !== undefined) {
         directFlights = directFlights.filter(flight => {
@@ -127,35 +120,31 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate, timeFilter) {
     if (directFlights.length === 0) return null;
 
     const best = directFlights.sort((a, b) => a.price - b.price)[0];
-    // Pass departureDate as display string (already DD/MM/YYYY from caller)
     const info = extractFlightInfo(best, flyFrom, flyTo, departureDate);
-    console.log(`    [Kiwi MCP] Beste directe: ${flyFrom}->${flyTo} €${info.price} (${info.airline}, ${info.departure}-${info.arrival})`);
+    console.log(`    [Kiwi MCP] Best direct: ${flyFrom}->${flyTo} €${info.price} (${info.airline}, ${info.departure}-${info.arrival}, ${info.duration})`);
     return info;
   } finally {
     await client.close();
   }
 }
 
-// Returns a YYYY-MM-DD string (safe for new Date() parsing)
 function addDays(dateStr, days) {
   const d = new Date(dateStr);
   d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10); // always YYYY-MM-DD
+  return d.toISOString().slice(0, 10);
 }
 
-// Accepts and returns YYYY-MM-DD strings internally
 function dateRange(startDateStr, endDateStr) {
   const dates = [];
   const current = new Date(startDateStr);
   const end = new Date(endDateStr);
   while (current <= end) {
-    dates.push(current.toISOString().slice(0, 10)); // YYYY-MM-DD
+    dates.push(current.toISOString().slice(0, 10));
     current.setUTCDate(current.getUTCDate() + 1);
   }
   return dates;
 }
 
-// Format YYYY-MM-DD -> DD/MM/YYYY for Kiwi API and display
 function toKiwiDate(isoDate) {
   const [yyyy, mm, dd] = isoDate.split('-');
   return `${dd}/${mm}/${yyyy}`;
@@ -163,18 +152,16 @@ function toKiwiDate(isoDate) {
 
 /**
  * Search outbound + return flights.
- * Outbound: origins → pickupIata (camper ophalen)
- * Inbound:  dropoffIata → origins (camper terugbrengen)
+ * Outbound: origins → pickupIata (pick up camper)
+ * Inbound:  dropoffIata → origins (drop off camper)
  */
 async function getFlightsForRoute(origins, pickupIata, dropoffIata, pickupDate, dropoffDate, departureWindow, returnWindow) {
   try {
-    // All date arithmetic in YYYY-MM-DD
     const outboundStart = addDays(pickupDate, -(departureWindow?.daysBefore || 0));
     const outboundEnd   = addDays(pickupDate, 0);
     const inboundStart  = addDays(dropoffDate, 0);
     const inboundEnd    = addDays(dropoffDate, returnWindow?.daysAfter || 0);
 
-    // dateRange returns YYYY-MM-DD array; convert to DD/MM/YYYY only for Kiwi API
     const outboundDates = dateRange(outboundStart, outboundEnd).map(toKiwiDate);
     const inboundDates  = dateRange(inboundStart, inboundEnd).map(toKiwiDate);
 
