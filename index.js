@@ -90,9 +90,10 @@ function formatFlightRow(flight, label) {
       <td colspan="5" style="padding:6px 10px; color:#aaa; font-style:italic;">Geen rechtstreekse vlucht gevonden</td>
     </tr>`;
   }
+  const dateStr = flight.flightDate ? `<br><span style="font-size:0.85em; font-weight:normal;">${flight.flightDate}</span>` : '';
   const flightNoStr = flight.flightNo ? ` <span style="color:#888; font-size:0.85em;">(${flight.flightNo})</span>` : '';
   return `<tr style="background:#f9f9f9;">
-    <td style="padding:6px 10px;"><strong>${label}</strong></td>
+    <td style="padding:6px 10px;"><strong>${label}</strong>${dateStr}</td>
     <td style="padding:6px 10px;">${flight.from} → ${flight.to}</td>
     <td style="padding:6px 10px;">${flight.departure} – ${flight.arrival} <span style="color:#888; font-size:0.85em;">(${flight.duration})</span></td>
     <td style="padding:6px 10px;">${flight.airline}${flightNoStr}</td>
@@ -137,6 +138,14 @@ function formatFlightBlock(outbound, inbound, flightError) {
 }
 
 async function run() {
+  // Fix #3: Validate required environment variables
+  const requiredEnvs = ['API_BASE_URL', 'EMAIL_USER', 'EMAIL_PASS', 'EMAIL_TO', 'BOOKING_URL'];
+  const missingEnvs = requiredEnvs.filter(env => !process.env[env]);
+  if (missingEnvs.length > 0) {
+    console.error(`[Critical error] Missing required environment variables: ${missingEnvs.join(', ')}`);
+    process.exit(1);
+  }
+
   console.log('Tracker started...');
   const configured = Array.isArray(config.cities) ? config.cities : [];
   const selectedCityIds = new Set(configured.filter(id => typeof id === 'number' && stations[id]));
@@ -154,28 +163,11 @@ async function run() {
   }
 
   let history = [];
-  try {
-    if (fs.existsSync('history.json')) {
-      history = JSON.parse(fs.readFileSync('history.json', 'utf8'));
-      if (!Array.isArray(history)) history = [];
-    }
-  } catch (err) {
-    console.error('Error reading history.json, starting with a clean slate.', err);
-    history = [];
-  }
 
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
   const cutoffDate = new Date(today);
   cutoffDate.setDate(today.getDate() - 7);
-  history = history.filter(entry => {
-    const parts = entry.split('_');
-    if (parts.length > 1) {
-      const startDate = new Date(parts[1]);
-      if (startDate < cutoffDate) return false;
-    }
-    return true;
-  });
 
   const historySet = new Set(history);
   const selectedArray = Array.from(selectedCityIds);
@@ -252,12 +244,13 @@ async function run() {
       const lines = [];
       for (const r of items) {
         let flightHtml = '';
-        if (useFlights && r.stationTo.iata && r.stationFrom.iata) {
-          console.log(`  ✈️  Fetching flights for ${r.stationFrom.name} → ${r.stationTo.name} (pickup: ${r.stationTo.iata}, dropoff: ${r.stationFrom.iata})`);
+        if (useFlights && r.stationFrom.iata && r.stationTo.iata) {
+          // Fix #1: Correct direction — outbound to pickup (stationFrom), inbound from dropoff (stationTo)
+          console.log(`  ✈️  Fetching flights for ${r.stationFrom.name} → ${r.stationTo.name} (pickup: ${r.stationFrom.iata}, dropoff: ${r.stationTo.iata})`);
           const flightResult = await getFlightsForRoute(
             config.flights.origins,
-            r.stationTo.iata,
-            r.stationFrom.iata,
+            r.stationFrom.iata,   // Outbound destination (pickup)
+            r.stationTo.iata,     // Inbound origin (dropoff)
             r.startDate,
             r.endDate,
             config.flights.departureWindow,
