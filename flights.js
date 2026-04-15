@@ -60,7 +60,6 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate, timeFilter) {
     { name: 'camper-tracker', version: '1.0.0' },
     { capabilities: {} }
   );
-  // Fix #2: Corrected transport
   const transport = new SSEClientTransport(new URL(KIWI_MCP_URL));
   await client.connect(transport);
 
@@ -72,7 +71,6 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate, timeFilter) {
         flyTo,
         departureDate,
         adults: 1,
-        // Fix #4 extra safety net: request direct/non-stop flights from the API
         max_stopovers: 0
       }
     });
@@ -101,7 +99,6 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate, timeFilter) {
 
     if (!Array.isArray(flights) || flights.length === 0) return null;
 
-    // Filter on direct flights
     let directFlights = flights.filter(isDirectFlight);
     console.log(`    [Kiwi MCP] ${flyFrom}->${flyTo}: ${flights.length} vluchten, ${directFlights.length} rechtstreeks`);
 
@@ -129,8 +126,8 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate, timeFilter) {
 
     if (directFlights.length === 0) return null;
 
-    // Cheapest direct flight
     const best = directFlights.sort((a, b) => a.price - b.price)[0];
+    // Pass departureDate as display string (already DD/MM/YYYY from caller)
     const info = extractFlightInfo(best, flyFrom, flyTo, departureDate);
     console.log(`    [Kiwi MCP] Beste directe: ${flyFrom}->${flyTo} €${info.price} (${info.airline}, ${info.departure}-${info.arrival})`);
     return info;
@@ -139,27 +136,29 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate, timeFilter) {
   }
 }
 
+// Returns a YYYY-MM-DD string (safe for new Date() parsing)
 function addDays(dateStr, days) {
   const d = new Date(dateStr);
   d.setUTCDate(d.getUTCDate() + days);
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const yyyy = d.getUTCFullYear();
-  return `${dd}/${mm}/${yyyy}`;
+  return d.toISOString().slice(0, 10); // always YYYY-MM-DD
 }
 
+// Accepts and returns YYYY-MM-DD strings internally
 function dateRange(startDateStr, endDateStr) {
   const dates = [];
   const current = new Date(startDateStr);
   const end = new Date(endDateStr);
   while (current <= end) {
-    const dd = String(current.getUTCDate()).padStart(2, '0');
-    const mm = String(current.getUTCMonth() + 1).padStart(2, '0');
-    const yyyy = current.getUTCFullYear();
-    dates.push(`${dd}/${mm}/${yyyy}`);
+    dates.push(current.toISOString().slice(0, 10)); // YYYY-MM-DD
     current.setUTCDate(current.getUTCDate() + 1);
   }
   return dates;
+}
+
+// Format YYYY-MM-DD -> DD/MM/YYYY for Kiwi API and display
+function toKiwiDate(isoDate) {
+  const [yyyy, mm, dd] = isoDate.split('-');
+  return `${dd}/${mm}/${yyyy}`;
 }
 
 /**
@@ -169,19 +168,19 @@ function dateRange(startDateStr, endDateStr) {
  */
 async function getFlightsForRoute(origins, pickupIata, dropoffIata, pickupDate, dropoffDate, departureWindow, returnWindow) {
   try {
-    // Fix #5: Build full date ranges instead of a single date
+    // All date arithmetic in YYYY-MM-DD
     const outboundStart = addDays(pickupDate, -(departureWindow?.daysBefore || 0));
     const outboundEnd   = addDays(pickupDate, 0);
     const inboundStart  = addDays(dropoffDate, 0);
     const inboundEnd    = addDays(dropoffDate, returnWindow?.daysAfter || 0);
 
-    const outboundDates = dateRange(outboundStart, outboundEnd);
-    const inboundDates  = dateRange(inboundStart, inboundEnd);
+    // dateRange returns YYYY-MM-DD array; convert to DD/MM/YYYY only for Kiwi API
+    const outboundDates = dateRange(outboundStart, outboundEnd).map(toKiwiDate);
+    const inboundDates  = dateRange(inboundStart, inboundEnd).map(toKiwiDate);
 
     console.log(`    [Flights] Outbound: ${origins.join('/')} → ${pickupIata} dates: ${outboundDates.join(', ')}`);
     console.log(`    [Flights] Inbound:  ${dropoffIata} → ${origins.join('/')} dates: ${inboundDates.join(', ')}`);
 
-    // Fix #5: Time filters from config
     const outboundTimeFilter = departureWindow?.latestArrivalHour !== undefined
       ? { latestArrivalHour: departureWindow.latestArrivalHour }
       : null;
@@ -189,7 +188,6 @@ async function getFlightsForRoute(origins, pickupIata, dropoffIata, pickupDate, 
       ? { earliestDepartureHour: returnWindow.earliestDepartureHour }
       : null;
 
-    // Fetch all outbound date/origin combos and pool results
     const outboundResults = (await Promise.all(
       origins.flatMap(origin =>
         outboundDates.map(date =>
@@ -199,7 +197,6 @@ async function getFlightsForRoute(origins, pickupIata, dropoffIata, pickupDate, 
       )
     )).filter(Boolean);
 
-    // Fetch all inbound date/origin combos and pool results
     const inboundResults = (await Promise.all(
       origins.flatMap(origin =>
         inboundDates.map(date =>
