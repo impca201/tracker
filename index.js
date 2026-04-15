@@ -87,7 +87,7 @@ function formatFlightRow(flight, label) {
   if (!flight) {
     return `<tr>
       <td style="padding:6px 10px; color:#888;"><strong>${label}</strong></td>
-      <td colspan="5" style="padding:6px 10px; color:#aaa; font-style:italic;">Geen rechtstreekse vlucht gevonden</td>
+      <td colspan="5" style="padding:6px 10px; color:#aaa; font-style:italic;">No direct flight found</td>
     </tr>`;
   }
   const dateStr = flight.flightDate ? `<br><span style="font-size:0.85em; font-weight:normal;">${flight.flightDate}</span>` : '';
@@ -98,19 +98,19 @@ function formatFlightRow(flight, label) {
     <td style="padding:6px 10px;">${flight.departure} – ${flight.arrival} <span style="color:#888; font-size:0.85em;">(${flight.duration})</span></td>
     <td style="padding:6px 10px;">${flight.airline}${flightNoStr}</td>
     <td style="padding:6px 10px; font-weight:bold; color:#27ae60;">€${flight.price}</td>
-    <td style="padding:6px 10px;"><a href="${flight.link}" style="color:#007BFF; white-space:nowrap;">Boek vlucht →</a></td>
+    <td style="padding:6px 10px;"><a href="${flight.link}" style="color:#007BFF; white-space:nowrap;">Book flight →</a></td>
   </tr>`;
 }
 
 function formatFlightBlock(outbound, inbound, flightError) {
   if (flightError) {
-    return `<p style="color:#c0392b; font-size:0.9em; margin:4px 0;">⚠️ Vluchtprijzen konden niet worden opgehaald: ${flightError}</p>`;
+    return `<p style="color:#c0392b; font-size:0.9em; margin:4px 0;">⚠️ Flight prices could not be retrieved: ${flightError}</p>`;
   }
 
   const totalPrice = (outbound?.price || 0) + (inbound?.price || 0);
   const totalStr = (outbound && inbound)
     ? `<tr style="border-top:2px solid #ddd;">
-        <td colspan="4" style="padding:6px 10px; text-align:right; color:#555;"><em>Totaal heen + terug:</em></td>
+        <td colspan="4" style="padding:6px 10px; text-align:right; color:#555;"><em>Total outbound + return:</em></td>
         <td style="padding:6px 10px; font-weight:bold; color:#27ae60; font-size:1.05em;">€${totalPrice}</td>
         <td></td>
       </tr>`
@@ -120,25 +120,24 @@ function formatFlightBlock(outbound, inbound, flightError) {
   <table style="border-collapse:collapse; width:100%; margin:8px 0; font-size:0.9em; border:1px solid #e0e0e0; border-radius:4px; overflow:hidden;">
     <thead>
       <tr style="background:#f0f0f0;">
-        <th style="padding:6px 10px; text-align:left;">Richting</th>
+        <th style="padding:6px 10px; text-align:left;">Direction</th>
         <th style="padding:6px 10px; text-align:left;">Route</th>
-        <th style="padding:6px 10px; text-align:left;">Tijden</th>
-        <th style="padding:6px 10px; text-align:left;">Maatschappij</th>
-        <th style="padding:6px 10px; text-align:left;">Prijs</th>
+        <th style="padding:6px 10px; text-align:left;">Times</th>
+        <th style="padding:6px 10px; text-align:left;">Airline</th>
+        <th style="padding:6px 10px; text-align:left;">Price</th>
         <th style="padding:6px 10px; text-align:left;"></th>
       </tr>
     </thead>
     <tbody>
-      ${formatFlightRow(outbound, '✈️ Heen')}
-      ${formatFlightRow(inbound, '✈️ Terug')}
+      ${formatFlightRow(outbound, '✈️ Outbound')}
+      ${formatFlightRow(inbound, '✈️ Return')}
       ${totalStr}
     </tbody>
   </table>
-  <p style="color:#888; font-size:0.8em; margin:2px 0 0;">ℹ️ Goedkoopste rechtstreekse vluchten via Kiwi.com — controleer beschikbaarheid voor boeking.</p>`;
+  <p style="color:#888; font-size:0.8em; margin:2px 0 0;">ℹ️ Cheapest direct flights via Kiwi.com — verify availability before booking.</p>`;
 }
 
 async function run() {
-  // Fix #3: Validate required environment variables
   const requiredEnvs = ['API_BASE_URL', 'EMAIL_USER', 'EMAIL_PASS', 'EMAIL_TO', 'BOOKING_URL'];
   const missingEnvs = requiredEnvs.filter(env => !process.env[env]);
   if (missingEnvs.length > 0) {
@@ -162,14 +161,33 @@ async function run() {
     console.log('Flight search disabled (no origins configured).');
   }
 
-  let history = [];
+  // FIX: Load history from file instead of always starting with an empty array
+  let historyArray = [];
+  if (fs.existsSync('history.json')) {
+    try {
+      historyArray = JSON.parse(fs.readFileSync('history.json', 'utf8'));
+      if (!Array.isArray(historyArray)) historyArray = [];
+    } catch (e) {
+      console.warn('[Warning] Could not parse history.json, starting fresh:', e.message);
+      historyArray = [];
+    }
+  }
+  console.log(`Loaded ${historyArray.length} entries from history.`);
 
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
   const cutoffDate = new Date(today);
   cutoffDate.setDate(today.getDate() - 7);
 
-  const historySet = new Set(history);
+  // Prune old entries (older than cutoff) to keep history.json from growing forever
+  historyArray = historyArray.filter(key => {
+    const datePart = key.split('_')[1];
+    if (!datePart) return false;
+    const d = new Date(datePart);
+    return !isNaN(d.getTime()) && d >= cutoffDate;
+  });
+
+  const historySet = new Set(historyArray);
   const selectedArray = Array.from(selectedCityIds);
   const routesToCheck = [];
   for (let i = 0; i < selectedArray.length; i++) {
@@ -245,12 +263,11 @@ async function run() {
       for (const r of items) {
         let flightHtml = '';
         if (useFlights && r.stationFrom.iata && r.stationTo.iata) {
-          // Fix #1: Correct direction — outbound to pickup (stationFrom), inbound from dropoff (stationTo)
           console.log(`  ✈️  Fetching flights for ${r.stationFrom.name} → ${r.stationTo.name} (pickup: ${r.stationFrom.iata}, dropoff: ${r.stationTo.iata})`);
           const flightResult = await getFlightsForRoute(
             config.flights.origins,
-            r.stationFrom.iata,   // Outbound destination (pickup)
-            r.stationTo.iata,     // Inbound origin (dropoff)
+            r.stationFrom.iata,
+            r.stationTo.iata,
             r.startDate,
             r.endDate,
             config.flights.departureWindow,
@@ -261,8 +278,8 @@ async function run() {
         lines.push(
           `<div style="margin-bottom:20px; padding:12px 16px; background:#fff; border:1px solid #e0e0e0; border-radius:6px;">` +
           `<p style="margin:0 0 4px;"><strong>🚐 ${r.stationFrom.name} (${r.stationFrom.country}) → ${r.stationTo.name} (${r.stationTo.country})</strong></p>` +
-          `<p style="margin:0 0 8px; color:#555;">📅 ${formatDate(r.startDate)} tot ${formatDate(r.endDate)}</p>` +
-          (flightHtml || '<p style="color:#aaa; font-style:italic;">Geen vluchtinfo beschikbaar.</p>') +
+          `<p style="margin:0 0 8px; color:#555;">📅 ${formatDate(r.startDate)} to ${formatDate(r.endDate)}</p>` +
+          (flightHtml || '<p style="color:#aaa; font-style:italic;">No flight info available.</p>') +
           `</div>`
         );
       }
