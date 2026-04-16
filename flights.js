@@ -1,7 +1,7 @@
 // flights.js — Kiwi.com MCP client
 // Direct flights only, full flight info (times, duration, price)
 //
-// MCP response structure (confirmed via debug):
+// MCP response structure:
 // { flyFrom, flyTo, cityFrom, cityTo, departure: { utc, local }, arrival: { utc, local },
 //   durationInSeconds, totalDurationInSeconds, price, deepLink, currency, layovers }
 // NOTE: No route/airline/flightNo fields in MCP response.
