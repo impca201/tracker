@@ -1,12 +1,17 @@
 // flights.js — Kiwi.com MCP client
-// Direct flights only, full flight info (times, duration, airline, price)
+// Direct flights only, full flight info (times, duration, price)
+//
+// MCP response structure (confirmed via debug):
+// { flyFrom, flyTo, cityFrom, cityTo, departure: { utc, local }, arrival: { utc, local },
+//   durationInSeconds, totalDurationInSeconds, price, deepLink, currency, layovers }
+// NOTE: No route/airline/flightNo fields in MCP response.
 
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { SSEClientTransport } = require('@modelcontextprotocol/sdk/client/sse.js');
 
 const KIWI_MCP_URL = 'https://mcp.kiwi.com';
 
-// FIX: Hard cap — reject any flight longer than 6 hours regardless of stop count
+// Hard cap: reject flights longer than this regardless of layovers field
 const MAX_DIRECT_FLIGHT_SECONDS = 6 * 3600; // 21600
 
 function formatLocalTime(isoString) {
@@ -22,11 +27,14 @@ function formatDuration(seconds) {
 }
 
 function isDirectFlight(flight) {
-  const durationSeconds = flight.durationInSeconds || flight.totalDurationInSeconds || 0;
-  // Reject anything over the max duration cap first
-  if (durationSeconds > MAX_DIRECT_FLIGHT_SECONDS) return false;
-  // Then check route segments
-  if (flight.route && Array.isArray(flight.route)) return flight.route.length === 1;
+  const dur = flight.durationInSeconds || flight.totalDurationInSeconds || 0;
+  // Hard duration cap first
+  if (dur > MAX_DIRECT_FLIGHT_SECONDS) return false;
+  // Use layovers array if present (confirmed field in MCP response)
+  if (Array.isArray(flight.layovers)) return flight.layovers.length === 0;
+  // Fallback: route array (not present in current MCP but kept for resilience)
+  if (Array.isArray(flight.route)) return flight.route.length === 1;
+  // Last resort: equal durations means no stopover added time
   if (flight.totalDurationInSeconds !== undefined && flight.durationInSeconds !== undefined) {
     return flight.totalDurationInSeconds === flight.durationInSeconds;
   }
@@ -34,26 +42,26 @@ function isDirectFlight(flight) {
 }
 
 function extractFlightInfo(flight, flyFrom, flyTo, departureDate) {
-  const segment = Array.isArray(flight.route) ? flight.route[0] : null;
-  const airlineCode = segment?.airline || flight.airlines?.[0] || flight.airline || '';
-  const airlineName = segment?.airlineName || flight.airlineNames?.[0] || airlineCode || 'Unknown';
-  const flightNo = segment?.flight_no || segment?.flightNo || flight.flightNo || null;
-
-  const depTime = formatLocalTime(flight.departure?.local || segment?.local_departure || segment?.localDeparture);
-  const arrTime = formatLocalTime(flight.arrival?.local || segment?.local_arrival || segment?.localArrival);
+  // MCP does not return airline/flightNo — omit rather than show 'Unknown'
+  const depTime  = formatLocalTime(flight.departure?.local);
+  const arrTime  = formatLocalTime(flight.arrival?.local);
   const duration = formatDuration(flight.durationInSeconds || flight.totalDurationInSeconds);
+  const stops    = Array.isArray(flight.layovers) ? flight.layovers.length : null;
 
   return {
-    price: flight.price,
-    airline: airlineName,
-    flightNo: flightNo,
-    departure: depTime,
-    arrival: arrTime,
-    duration: duration,
-    from: flight.flyFrom || flyFrom,
-    to: flight.flyTo || flyTo,
-    link: flight.deepLink || flight.bookingLink || `https://www.kiwi.com/deep?from=${flyFrom}&to=${flyTo}`,
-    flightDate: departureDate || null
+    price:       flight.price,
+    airline:     null,   // not provided by Kiwi MCP
+    flightNo:    null,   // not provided by Kiwi MCP
+    stops:       stops,
+    departure:   depTime,
+    arrival:     arrTime,
+    duration:    duration,
+    from:        flight.flyFrom  || flyFrom,
+    to:          flight.flyTo    || flyTo,
+    cityFrom:    flight.cityFrom || null,
+    cityTo:      flight.cityTo   || null,
+    link:        flight.deepLink || `https://www.kiwi.com/en/search/results/${flyFrom}/${flyTo}`,
+    flightDate:  departureDate   || null
   };
 }
 
@@ -94,25 +102,21 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate, timeFilter) {
     if (!Array.isArray(flights) || flights.length === 0) return null;
 
     let directFlights = flights.filter(isDirectFlight);
-    console.log(`    [Kiwi MCP] ${flyFrom}->${flyTo}: ${flights.length} flights total, ${directFlights.length} direct (under ${MAX_DIRECT_FLIGHT_SECONDS / 3600}h)`);
+    console.log(`    [Kiwi MCP] ${flyFrom}->${flyTo}: ${flights.length} flights total, ${directFlights.length} direct (layovers=0, under ${MAX_DIRECT_FLIGHT_SECONDS / 3600}h)`);
 
     if (timeFilter) {
       if (timeFilter.latestArrivalHour !== undefined) {
         directFlights = directFlights.filter(flight => {
-          const segment = Array.isArray(flight.route) ? flight.route[0] : null;
-          const arrLocal = flight.arrival?.local || segment?.local_arrival || segment?.localArrival;
+          const arrLocal = flight.arrival?.local;
           if (!arrLocal) return true;
-          const arrHour = parseInt(arrLocal.slice(11, 13), 10);
-          return arrHour <= timeFilter.latestArrivalHour;
+          return parseInt(arrLocal.slice(11, 13), 10) <= timeFilter.latestArrivalHour;
         });
       }
       if (timeFilter.earliestDepartureHour !== undefined) {
         directFlights = directFlights.filter(flight => {
-          const segment = Array.isArray(flight.route) ? flight.route[0] : null;
-          const depLocal = flight.departure?.local || segment?.local_departure || segment?.localDeparture;
+          const depLocal = flight.departure?.local;
           if (!depLocal) return true;
-          const depHour = parseInt(depLocal.slice(11, 13), 10);
-          return depHour >= timeFilter.earliestDepartureHour;
+          return parseInt(depLocal.slice(11, 13), 10) >= timeFilter.earliestDepartureHour;
         });
       }
     }
@@ -121,7 +125,7 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate, timeFilter) {
 
     const best = directFlights.sort((a, b) => a.price - b.price)[0];
     const info = extractFlightInfo(best, flyFrom, flyTo, departureDate);
-    console.log(`    [Kiwi MCP] Best direct: ${flyFrom}->${flyTo} €${info.price} (${info.airline}, ${info.departure}-${info.arrival}, ${info.duration})`);
+    console.log(`    [Kiwi MCP] Best direct: ${flyFrom}->${flyTo} €${info.price} (${info.departure}-${info.arrival}, ${info.duration})`);
     return info;
   } finally {
     await client.close();

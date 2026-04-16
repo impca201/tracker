@@ -4,11 +4,11 @@
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { SSEClientTransport } = require('@modelcontextprotocol/sdk/client/sse.js');
 
-const flyFrom     = process.env.FLY_FROM       || 'BRU';
-const flyTo       = process.env.FLY_TO         || 'BCN';
-const dateISO     = process.env.DEPARTURE_DATE || '2026-05-01';
-const showAll     = process.env.SHOW_ALL !== 'false';
-const maxStops    = parseInt(process.env.MAX_STOPOVERS ?? '0', 10);
+const flyFrom  = process.env.FLY_FROM       || 'BRU';
+const flyTo    = process.env.FLY_TO         || 'BCN';
+const dateISO  = process.env.DEPARTURE_DATE || '2026-05-01';
+const showAll  = process.env.SHOW_ALL !== 'false';
+const maxStops = parseInt(process.env.MAX_STOPOVERS ?? '0', 10);
 
 const KIWI_MCP_URL = 'https://mcp.kiwi.com';
 const MAX_DIRECT_FLIGHT_SECONDS = 6 * 3600;
@@ -28,7 +28,8 @@ function formatDuration(seconds) {
 function isDirectFlight(flight) {
   const dur = flight.durationInSeconds || flight.totalDurationInSeconds || 0;
   if (dur > MAX_DIRECT_FLIGHT_SECONDS) return false;
-  if (flight.route && Array.isArray(flight.route)) return flight.route.length === 1;
+  if (Array.isArray(flight.layovers)) return flight.layovers.length === 0;
+  if (Array.isArray(flight.route))    return flight.route.length === 1;
   if (flight.totalDurationInSeconds !== undefined && flight.durationInSeconds !== undefined) {
     return flight.totalDurationInSeconds === flight.durationInSeconds;
   }
@@ -57,92 +58,68 @@ async function callKiwiMcp(departureDate) {
   }
 }
 
-function printFlight(f, index, tag = '') {
-  const dur = f.durationInSeconds || f.totalDurationInSeconds || 0;
-  const stops = f.route?.length ?? '?';
-  const segment = Array.isArray(f.route) ? f.route[0] : null;
-  const dep = f.departure?.local || segment?.local_departure || segment?.localDeparture || '?';
-  const arr = f.arrival?.local || segment?.local_arrival || segment?.localArrival || '?';
-  const airline = segment?.airlineName || f.airlineNames?.[0] || f.airlines?.[0] || segment?.airline || 'Unknown';
-  const flightNo = segment?.flight_no || segment?.flightNo || f.flightNo || '';
-  const directFlag = isDirectFlight(f) ? '✓ DIRECT' : `✗ FILTER (${stops} stops, ${formatDuration(dur)})`;
-  console.log(`  [${index + 1}] ${tag}€${f.price} | ${airline} ${flightNo} | ${dep?.slice(11,16) || dep} → ${arr?.slice(11,16) || arr} | ${formatDuration(dur)} | stops:${stops} | ${directFlag}`);
-  if (!isDirectFlight(f)) {
-    const reason = [];
-    if (dur > MAX_DIRECT_FLIGHT_SECONDS) reason.push(`duur ${formatDuration(dur)} > 6h cap`);
-    if (f.route?.length > 1) reason.push(`${f.route.length} route-segmenten`);
-    console.log(`        ↳ Gefilterd omdat: ${reason.join(' + ')}`);
+function printFlight(f, index) {
+  const dur     = f.durationInSeconds || f.totalDurationInSeconds || 0;
+  const layovers = Array.isArray(f.layovers) ? f.layovers.length : '?';
+  const dep     = f.departure?.local || '?';
+  const arr     = f.arrival?.local   || '?';
+  const direct  = isDirectFlight(f);
+  const flag    = direct ? '✓ DIRECT' : `✗ FILTER`;
+  const reasons = [];
+  if (dur > MAX_DIRECT_FLIGHT_SECONDS) reasons.push(`duur ${formatDuration(dur)} > 6h cap`);
+  if (Array.isArray(f.layovers) && f.layovers.length > 0) reasons.push(`${f.layovers.length} layover(s)`);
+
+  console.log(`  [${index + 1}] €${f.price} | ${dep.slice(11,16)} → ${arr.slice(11,16)} | ${formatDuration(dur)} | layovers:${layovers} | ${flag}${reasons.length ? ' ↳ ' + reasons.join(' + ') : ''}`);
+
+  // Dump layover detail indien aanwezig
+  if (Array.isArray(f.layovers) && f.layovers.length > 0) {
+    f.layovers.forEach((l, i) => console.log(`       layover[${i}]: ${JSON.stringify(l)}`));
   }
 }
 
 async function run() {
+  const kiwiDate = toKiwiDate(dateISO);
+
   console.log('\n╔══════════════════════════════════════════════════════╗');
   console.log(`║  FLIGHTS DEBUG: ${flyFrom} → ${flyTo}`);
-  console.log(`║  Datum (ISO):   ${dateISO}`);
-  console.log(`║  Datum (Kiwi):  ${toKiwiDate(dateISO)}`);
-  console.log(`║  max_stopovers: ${maxStops}`);
+  console.log(`║  Datum:          ${kiwiDate}  (ISO: ${dateISO})`);
+  console.log(`║  max_stopovers:  ${maxStops}`);
   console.log('╚══════════════════════════════════════════════════════╝\n');
 
-  const kiwiDate = toKiwiDate(dateISO);
-  console.log(`\n━━━ API call met datum: "${kiwiDate}" (DD/MM/YYYY) ━━━`);
   const { error, flights } = await callKiwiMcp(kiwiDate);
 
-  if (error) {
-    console.log(`  ✗ Fout: ${error}`);
-    return;
-  }
+  if (error) { console.log(`✗ Fout: ${error}`); return; }
+  if (flights.length === 0) { console.log('✗ Geen vluchten teruggekeerd.'); return; }
 
-  if (flights.length === 0) {
-    console.log('  ✗ Geen vluchten teruggekeerd van MCP.');
-    return;
-  }
-
-  // ── RAW DUMP van eerste vlucht-object ──────────────────────────────────────
-  console.log('\n━━━ RAW vlucht[0] — volledige JSON structuur ━━━');
-  console.log(JSON.stringify(flights[0], null, 2));
-  console.log('━━━ RAW vlucht[0] END ━━━\n');
-
-  // ── Top-level veldnamen van alle vluchten (voor overzicht) ─────────────────
+  // Veldnamen overzicht
   const allKeys = [...new Set(flights.flatMap(f => Object.keys(f)))].sort();
-  console.log('Beschikbare top-level velden in response:', allKeys.join(', '));
+  console.log('Top-level velden:', allKeys.join(', '));
 
-  // ── route-structuur dump (als aanwezig) ────────────────────────────────────
-  const withRoute = flights.find(f => f.route && Array.isArray(f.route) && f.route.length > 0);
-  if (withRoute) {
-    console.log('\n━━━ RAW route[0] segment van eerste vlucht met route ━━━');
-    console.log(JSON.stringify(withRoute.route[0], null, 2));
-    console.log('━━━ END ━━━\n');
+  // layovers structuur op eerste vlucht met layovers
+  const withLayover = flights.find(f => Array.isArray(f.layovers) && f.layovers.length > 0);
+  if (withLayover) {
+    console.log('\nVoorbeeld layover object:');
+    console.log(JSON.stringify(withLayover.layovers[0], null, 2));
   } else {
-    console.log('\n⚠️  Geen enkel vlucht-object heeft een "route" array → isDirectFlight() valt terug op duur-check.\n');
+    console.log('ℹ️  Geen enkele vlucht heeft layovers → alle vluchten zijn direct (layovers=[]).');
   }
 
-  // ── Overzicht ──────────────────────────────────────────────────────────────
-  const direct = flights.filter(isDirectFlight);
+  const direct   = flights.filter(isDirectFlight);
   const filtered = flights.filter(f => !isDirectFlight(f));
 
-  console.log(`Totaal ontvangen: ${flights.length} vluchten`);
-  console.log(`Na filter (direct + <6h): ${direct.length} | Weggefilterd: ${filtered.length}\n`);
+  console.log(`\nTotaal: ${flights.length} | Direct: ${direct.length} | Gefilterd: ${filtered.length}\n`);
 
   if (showAll) {
     console.log('-- Alle vluchten (gesorteerd op prijs) --');
     [...flights].sort((a, b) => a.price - b.price).forEach((f, i) => printFlight(f, i));
   } else {
-    if (direct.length > 0) {
-      const best = direct.sort((a, b) => a.price - b.price)[0];
-      console.log('-- Beste directe vlucht (= wat de tracker gebruikt) --');
-      printFlight(best, 0);
-    } else {
-      console.log('✗ Geen directe vluchten gevonden na filter.');
-    }
-  }
-
-  if (filtered.length > 0) {
-    console.log(`\n-- ${filtered.length} weggefilterde vluchten --`);
-    filtered.sort((a, b) => a.price - b.price).forEach((f, i) => printFlight(f, i));
+    const best = direct.sort((a, b) => a.price - b.price)[0];
+    if (best) { console.log('-- Beste directe vlucht --'); printFlight(best, 0); }
+    else console.log('✗ Geen directe vluchten na filter.');
   }
 
   const kiwiUrl = `https://www.kiwi.com/en/search/results/${flyFrom.toLowerCase()}/${flyTo.toLowerCase()}/${dateISO}`;
-  console.log(`\n→ Vergelijk zelf op Kiwi.com: ${kiwiUrl}`);
+  console.log(`\n→ Vergelijk op Kiwi.com: ${kiwiUrl}`);
   console.log('\n══════════════════════════════════════════════════════\n');
 }
 
