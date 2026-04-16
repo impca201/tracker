@@ -151,17 +151,21 @@ async function run() {
 
   const useFlights = flightsEnabled();
 
+  // --- History: lezen ---
   let historyArray = [];
   if (fs.existsSync('history.json')) {
     try {
-      historyArray = JSON.parse(fs.readFileSync('history.json', 'utf8'));
-      if (!Array.isArray(historyArray)) historyArray = [];
+      const raw = fs.readFileSync('history.json', 'utf8');
+      const parsed = JSON.parse(raw);
+      historyArray = Array.isArray(parsed) ? parsed : [];
     } catch (e) {
+      console.warn('[Warning] Could not parse history.json, starting fresh:', e.message);
       historyArray = [];
     }
   }
   console.log(`Loaded ${historyArray.length} entries from history.`);
 
+  // Cleanup: remove entries older than 7 days
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
   const cutoffDate = new Date(today);
@@ -229,6 +233,7 @@ async function run() {
   const hadErrors = criticalErrors.length > 0;
 
   if (found.length === 0 && !hadErrors) {
+    // Always persist history (cleanup already applied above)
     fs.writeFileSync('history.json', JSON.stringify([...historySet].sort(), null, 2));
     console.log('No new routes found and no critical API errors. No email sent.');
     return;
@@ -248,7 +253,6 @@ async function run() {
     for (const [groupTitle, items] of Array.from(grouped.entries()).sort()) {
       const lines = [];
       for (const r of items) {
-        // Build booking link for this specific route
         const routeBookingUrl = `${process.env.BOOKING_URL}?from=${r.stationFrom.iata || ''}&to=${r.stationTo.iata || ''}`;
 
         let flightHtml = '';
@@ -312,6 +316,9 @@ async function run() {
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
   });
 
+  // Add newly found routes to history BEFORE sending, so they are always persisted
+  for (const r of found) historySet.add(r.uniqueKey);
+
   try {
     await transporter.sendMail({
       from: process.env.EMAIL_USER,
@@ -320,12 +327,13 @@ async function run() {
       html: body
     });
     console.log('Email sent successfully!');
-    for (const r of found) historySet.add(r.uniqueKey);
   } catch (e) {
     console.error('[Error] Mail failed:', e.message);
   }
 
+  // Always write history, regardless of mail success
   fs.writeFileSync('history.json', JSON.stringify([...historySet].sort(), null, 2));
+  console.log(`History saved: ${historySet.size} entries.`);
 }
 
 run().catch(err => {

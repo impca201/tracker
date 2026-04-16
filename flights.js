@@ -59,7 +59,9 @@ function extractFlightInfo(flight, flyFrom, flyTo, departureDate) {
   };
 }
 
-async function callKiwiMcp(flyFrom, flyTo, departureDate, timeFilter) {
+// applyTimeFilter only when the flight date matches the "key" date (pickup or dropoff day itself)
+// For D-1 and D+1 dates, no time restriction applies.
+async function callKiwiMcp(flyFrom, flyTo, departureDate, timeFilter, isKeyDate) {
   const client = new Client(
     { name: 'camper-tracker', version: '1.0.0' },
     { capabilities: {} }
@@ -87,7 +89,8 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate, timeFilter) {
 
     let directFlights = flights.filter(isDirectFlight);
 
-    if (timeFilter) {
+    // Time filter only applies on the key date (pickup/dropoff day itself), not on D-1 or D+1
+    if (isKeyDate && timeFilter) {
       if (timeFilter.latestArrivalHour !== undefined) {
         directFlights = directFlights.filter(flight => {
           const arrLocal = flight.arrival?.local;
@@ -137,13 +140,16 @@ function toKiwiDate(isoDate) {
 
 async function getFlightsForRoute(origins, pickupIata, dropoffIata, pickupDate, dropoffDate, departureWindow, returnWindow) {
   try {
+    const outboundKeyDate = pickupDate;  // the day itself: time filter applies
+    const inboundKeyDate  = dropoffDate; // the day itself: time filter applies
+
     const outboundStart = addDays(pickupDate, -(departureWindow?.daysBefore || 0));
     const outboundEnd   = addDays(pickupDate, 0);
     const inboundStart  = addDays(dropoffDate, 0);
     const inboundEnd    = addDays(dropoffDate, returnWindow?.daysAfter || 0);
 
-    const outboundDates = dateRange(outboundStart, outboundEnd).map(toKiwiDate);
-    const inboundDates  = dateRange(inboundStart, inboundEnd).map(toKiwiDate);
+    const outboundDates = dateRange(outboundStart, outboundEnd);
+    const inboundDates  = dateRange(inboundStart, inboundEnd);
 
     const outboundTimeFilter = departureWindow?.latestArrivalHour !== undefined
       ? { latestArrivalHour: departureWindow.latestArrivalHour }
@@ -154,19 +160,21 @@ async function getFlightsForRoute(origins, pickupIata, dropoffIata, pickupDate, 
 
     const outboundResults = (await Promise.all(
       origins.flatMap(origin =>
-        outboundDates.map(date =>
-          callKiwiMcp(origin, pickupIata, date, outboundTimeFilter)
-            .catch(() => null)
-        )
+        outboundDates.map(date => {
+          const isKeyDate = (date === outboundKeyDate);
+          return callKiwiMcp(origin, pickupIata, toKiwiDate(date), outboundTimeFilter, isKeyDate)
+            .catch(() => null);
+        })
       )
     )).filter(Boolean);
 
     const inboundResults = (await Promise.all(
       origins.flatMap(origin =>
-        inboundDates.map(date =>
-          callKiwiMcp(dropoffIata, origin, date, inboundTimeFilter)
-            .catch(() => null)
-        )
+        inboundDates.map(date => {
+          const isKeyDate = (date === inboundKeyDate);
+          return callKiwiMcp(dropoffIata, origin, toKiwiDate(date), inboundTimeFilter, isKeyDate)
+            .catch(() => null);
+        })
       )
     )).filter(Boolean);
 
