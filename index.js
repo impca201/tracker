@@ -233,7 +233,6 @@ async function run() {
   const hadErrors = criticalErrors.length > 0;
 
   if (found.length === 0 && !hadErrors) {
-    // Always persist history (cleanup already applied above)
     fs.writeFileSync('history.json', JSON.stringify([...historySet].sort(), null, 2));
     console.log('No new routes found and no critical API errors. No email sent.');
     return;
@@ -316,9 +315,6 @@ async function run() {
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
   });
 
-  // Add newly found routes to history BEFORE sending, so they are always persisted
-  for (const r of found) historySet.add(r.uniqueKey);
-
   try {
     await transporter.sendMail({
       from: process.env.EMAIL_USER,
@@ -327,13 +323,13 @@ async function run() {
       html: body
     });
     console.log('Email sent successfully!');
+    // Only update history after successful mail send
+    for (const r of found) historySet.add(r.uniqueKey);
   } catch (e) {
     console.error('[Error] Mail failed:', e.message);
   }
 
-  // Always write history, regardless of mail success
   fs.writeFileSync('history.json', JSON.stringify([...historySet].sort(), null, 2));
-  console.log(`History saved: ${historySet.size} entries.`);
 }
 
 run().catch(err => {
