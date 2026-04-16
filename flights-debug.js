@@ -83,56 +83,66 @@ async function run() {
   console.log(`║  max_stopovers: ${maxStops}`);
   console.log('╚══════════════════════════════════════════════════════╝\n');
 
-  const datesToTest = [
-    { label: 'DD/MM/YYYY (huidig formaat in code)', value: toKiwiDate(dateISO) },
-    { label: 'YYYY-MM-DD (ISO formaat)',            value: dateISO }
-  ];
+  const kiwiDate = toKiwiDate(dateISO);
+  console.log(`\n━━━ API call met datum: "${kiwiDate}" (DD/MM/YYYY) ━━━`);
+  const { error, flights } = await callKiwiMcp(kiwiDate);
 
-  for (const { label, value } of datesToTest) {
-    console.log(`\n━━━ API call met datum: "${value}" (${label}) ━━━`);
-    const { error, flights } = await callKiwiMcp(value);
-
-    if (error) {
-      console.log(`  ✗ Fout: ${error}`);
-      continue;
-    }
-
-    if (flights.length === 0) {
-      console.log('  ✗ Geen vluchten teruggekeerd van MCP.');
-      continue;
-    }
-
-    const direct = flights.filter(isDirectFlight);
-    const filtered = flights.filter(f => !isDirectFlight(f));
-
-    console.log(`  Totaal ontvangen: ${flights.length} vluchten`);
-    console.log(`  Na filter (direct + <6h): ${direct.length} | Weggefilterd: ${filtered.length}\n`);
-
-    if (showAll) {
-      console.log('  -- Alle vluchten (gesorteerd op prijs) --');
-      [...flights].sort((a, b) => a.price - b.price).forEach((f, i) => printFlight(f, i));
-    } else {
-      if (direct.length > 0) {
-        const best = direct.sort((a, b) => a.price - b.price)[0];
-        console.log('  -- Beste directe vlucht (= wat de tracker gebruikt) --');
-        printFlight(best, 0);
-      } else {
-        console.log('  ✗ Geen directe vluchten gevonden na filter.');
-      }
-    }
-
-    if (filtered.length > 0) {
-      console.log(`\n  -- ${filtered.length} weggefilterde vluchten --`);
-      filtered.sort((a, b) => a.price - b.price).forEach((f, i) => printFlight(f, i, ''));
-    }
-
-    // Kiwi.com vergelijkingslink
-    const kiwiUrl = `https://www.kiwi.com/en/search/results/${flyFrom.toLowerCase()}/${flyTo.toLowerCase()}/${dateISO}`;
-    console.log(`\n  → Vergelijk zelf op Kiwi.com: ${kiwiUrl}`);
-
-    if (!showAll) break; // Bij showAll=false enkel 1e datumformaat nodig
+  if (error) {
+    console.log(`  ✗ Fout: ${error}`);
+    return;
   }
 
+  if (flights.length === 0) {
+    console.log('  ✗ Geen vluchten teruggekeerd van MCP.');
+    return;
+  }
+
+  // ── RAW DUMP van eerste vlucht-object ──────────────────────────────────────
+  console.log('\n━━━ RAW vlucht[0] — volledige JSON structuur ━━━');
+  console.log(JSON.stringify(flights[0], null, 2));
+  console.log('━━━ RAW vlucht[0] END ━━━\n');
+
+  // ── Top-level veldnamen van alle vluchten (voor overzicht) ─────────────────
+  const allKeys = [...new Set(flights.flatMap(f => Object.keys(f)))].sort();
+  console.log('Beschikbare top-level velden in response:', allKeys.join(', '));
+
+  // ── route-structuur dump (als aanwezig) ────────────────────────────────────
+  const withRoute = flights.find(f => f.route && Array.isArray(f.route) && f.route.length > 0);
+  if (withRoute) {
+    console.log('\n━━━ RAW route[0] segment van eerste vlucht met route ━━━');
+    console.log(JSON.stringify(withRoute.route[0], null, 2));
+    console.log('━━━ END ━━━\n');
+  } else {
+    console.log('\n⚠️  Geen enkel vlucht-object heeft een "route" array → isDirectFlight() valt terug op duur-check.\n');
+  }
+
+  // ── Overzicht ──────────────────────────────────────────────────────────────
+  const direct = flights.filter(isDirectFlight);
+  const filtered = flights.filter(f => !isDirectFlight(f));
+
+  console.log(`Totaal ontvangen: ${flights.length} vluchten`);
+  console.log(`Na filter (direct + <6h): ${direct.length} | Weggefilterd: ${filtered.length}\n`);
+
+  if (showAll) {
+    console.log('-- Alle vluchten (gesorteerd op prijs) --');
+    [...flights].sort((a, b) => a.price - b.price).forEach((f, i) => printFlight(f, i));
+  } else {
+    if (direct.length > 0) {
+      const best = direct.sort((a, b) => a.price - b.price)[0];
+      console.log('-- Beste directe vlucht (= wat de tracker gebruikt) --');
+      printFlight(best, 0);
+    } else {
+      console.log('✗ Geen directe vluchten gevonden na filter.');
+    }
+  }
+
+  if (filtered.length > 0) {
+    console.log(`\n-- ${filtered.length} weggefilterde vluchten --`);
+    filtered.sort((a, b) => a.price - b.price).forEach((f, i) => printFlight(f, i));
+  }
+
+  const kiwiUrl = `https://www.kiwi.com/en/search/results/${flyFrom.toLowerCase()}/${flyTo.toLowerCase()}/${dateISO}`;
+  console.log(`\n→ Vergelijk zelf op Kiwi.com: ${kiwiUrl}`);
   console.log('\n══════════════════════════════════════════════════════\n');
 }
 
