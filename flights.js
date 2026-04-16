@@ -12,7 +12,7 @@ const { SSEClientTransport } = require('@modelcontextprotocol/sdk/client/sse.js'
 const KIWI_MCP_URL = 'https://mcp.kiwi.com';
 
 // Hard cap: reject flights longer than this regardless of layovers field
-const MAX_DIRECT_FLIGHT_SECONDS = 6 * 3600; // 21600
+const MAX_DIRECT_FLIGHT_SECONDS = 6 * 3600;
 
 function formatLocalTime(isoString) {
   if (!isoString) return '?';
@@ -28,40 +28,34 @@ function formatDuration(seconds) {
 
 function isDirectFlight(flight) {
   const dur = flight.durationInSeconds || flight.totalDurationInSeconds || 0;
-  // Hard duration cap first
   if (dur > MAX_DIRECT_FLIGHT_SECONDS) return false;
-  // Use layovers array if present (confirmed field in MCP response)
-  if (Array.isArray(flight.layovers)) return flight.layovers.length === 0;
-  // Fallback: route array (not present in current MCP but kept for resilience)
+  // layovers array: empty = direct, null/undefined = unknown (treat as direct if duration ok)
+  const layovers = flight.layovers ?? [];
+  if (Array.isArray(layovers)) return layovers.length === 0;
+  // Fallback: route array
   if (Array.isArray(flight.route)) return flight.route.length === 1;
-  // Last resort: equal durations means no stopover added time
-  if (flight.totalDurationInSeconds !== undefined && flight.durationInSeconds !== undefined) {
-    return flight.totalDurationInSeconds === flight.durationInSeconds;
-  }
-  return false;
+  return true;
 }
 
 function extractFlightInfo(flight, flyFrom, flyTo, departureDate) {
-  // MCP does not return airline/flightNo — omit rather than show 'Unknown'
   const depTime  = formatLocalTime(flight.departure?.local);
   const arrTime  = formatLocalTime(flight.arrival?.local);
   const duration = formatDuration(flight.durationInSeconds || flight.totalDurationInSeconds);
-  const stops    = Array.isArray(flight.layovers) ? flight.layovers.length : null;
+  const layovers = flight.layovers ?? [];
+  const stops    = Array.isArray(layovers) ? layovers.length : 0;
 
   return {
-    price:       flight.price,
-    airline:     null,   // not provided by Kiwi MCP
-    flightNo:    null,   // not provided by Kiwi MCP
-    stops:       stops,
-    departure:   depTime,
-    arrival:     arrTime,
-    duration:    duration,
-    from:        flight.flyFrom  || flyFrom,
-    to:          flight.flyTo    || flyTo,
-    cityFrom:    flight.cityFrom || null,
-    cityTo:      flight.cityTo   || null,
-    link:        flight.deepLink || `https://www.kiwi.com/en/search/results/${flyFrom}/${flyTo}`,
-    flightDate:  departureDate   || null
+    price:      flight.price,
+    stops:      stops,
+    departure:  depTime,
+    arrival:    arrTime,
+    duration:   duration,
+    from:       flight.flyFrom  || flyFrom,
+    to:         flight.flyTo    || flyTo,
+    cityFrom:   flight.cityFrom || null,
+    cityTo:     flight.cityTo   || null,
+    link:       flight.deepLink || `https://www.kiwi.com/en/search/results/${flyFrom}/${flyTo}`,
+    flightDate: departureDate   || null
   };
 }
 
@@ -76,33 +70,22 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate, timeFilter) {
   try {
     const result = await client.callTool({
       name: 'search-flight',
-      arguments: {
-        flyFrom,
-        flyTo,
-        departureDate,
-        adults: 1,
-        max_stopovers: 0
-      }
+      arguments: { flyFrom, flyTo, departureDate, adults: 1, max_stopovers: 0 }
     });
 
     const raw = result?.content?.[0]?.text;
-    if (!raw) {
-      console.log(`    [Kiwi MCP] Empty response for ${flyFrom}->${flyTo} on ${departureDate}`);
-      return null;
-    }
+    if (!raw) return null;
 
     let flights;
     try {
       flights = JSON.parse(raw);
     } catch {
-      console.log(`    [Kiwi MCP] Could not parse JSON: ${raw.slice(0, 200)}`);
       return null;
     }
 
     if (!Array.isArray(flights) || flights.length === 0) return null;
 
     let directFlights = flights.filter(isDirectFlight);
-    console.log(`    [Kiwi MCP] ${flyFrom}->${flyTo}: ${flights.length} flights total, ${directFlights.length} direct (layovers=0, under ${MAX_DIRECT_FLIGHT_SECONDS / 3600}h)`);
 
     if (timeFilter) {
       if (timeFilter.latestArrivalHour !== undefined) {
@@ -124,9 +107,7 @@ async function callKiwiMcp(flyFrom, flyTo, departureDate, timeFilter) {
     if (directFlights.length === 0) return null;
 
     const best = directFlights.sort((a, b) => a.price - b.price)[0];
-    const info = extractFlightInfo(best, flyFrom, flyTo, departureDate);
-    console.log(`    [Kiwi MCP] Best direct: ${flyFrom}->${flyTo} €${info.price} (${info.departure}-${info.arrival}, ${info.duration})`);
-    return info;
+    return extractFlightInfo(best, flyFrom, flyTo, departureDate);
   } finally {
     await client.close();
   }
@@ -154,11 +135,6 @@ function toKiwiDate(isoDate) {
   return `${dd}/${mm}/${yyyy}`;
 }
 
-/**
- * Search outbound + return flights.
- * Outbound: origins → pickupIata (pick up camper)
- * Inbound:  dropoffIata → origins (drop off camper)
- */
 async function getFlightsForRoute(origins, pickupIata, dropoffIata, pickupDate, dropoffDate, departureWindow, returnWindow) {
   try {
     const outboundStart = addDays(pickupDate, -(departureWindow?.daysBefore || 0));
@@ -168,9 +144,6 @@ async function getFlightsForRoute(origins, pickupIata, dropoffIata, pickupDate, 
 
     const outboundDates = dateRange(outboundStart, outboundEnd).map(toKiwiDate);
     const inboundDates  = dateRange(inboundStart, inboundEnd).map(toKiwiDate);
-
-    console.log(`    [Flights] Outbound: ${origins.join('/')} → ${pickupIata} dates: ${outboundDates.join(', ')}`);
-    console.log(`    [Flights] Inbound:  ${dropoffIata} → ${origins.join('/')} dates: ${inboundDates.join(', ')}`);
 
     const outboundTimeFilter = departureWindow?.latestArrivalHour !== undefined
       ? { latestArrivalHour: departureWindow.latestArrivalHour }
@@ -183,7 +156,7 @@ async function getFlightsForRoute(origins, pickupIata, dropoffIata, pickupDate, 
       origins.flatMap(origin =>
         outboundDates.map(date =>
           callKiwiMcp(origin, pickupIata, date, outboundTimeFilter)
-            .catch(e => { console.error(`    [Flights] outbound error (${origin} ${date}): ${e.message}`); return null; })
+            .catch(() => null)
         )
       )
     )).filter(Boolean);
@@ -192,7 +165,7 @@ async function getFlightsForRoute(origins, pickupIata, dropoffIata, pickupDate, 
       origins.flatMap(origin =>
         inboundDates.map(date =>
           callKiwiMcp(dropoffIata, origin, date, inboundTimeFilter)
-            .catch(e => { console.error(`    [Flights] inbound error (${origin} ${date}): ${e.message}`); return null; })
+            .catch(() => null)
         )
       )
     )).filter(Boolean);
@@ -202,7 +175,6 @@ async function getFlightsForRoute(origins, pickupIata, dropoffIata, pickupDate, 
 
     return { outbound: bestOutbound, inbound: bestInbound, flightError: null };
   } catch (e) {
-    console.error(`[Flights] Kiwi MCP error: ${e.message}`);
     return { outbound: null, inbound: null, flightError: e.message };
   }
 }

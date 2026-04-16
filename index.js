@@ -48,7 +48,6 @@ async function fetchQuiet(url, routeId, errors, retries = config.settings.maxRet
         const contentType = res.headers.get('content-type') || '';
         if (!contentType.includes('application/json')) {
           const msg = `Unexpected content-type "${contentType}" for route ${routeId}`;
-          console.warn(`[Warning] ${msg}`);
           errors.push({ routeId, status: res.status, message: msg });
           return null;
         }
@@ -57,11 +56,9 @@ async function fetchQuiet(url, routeId, errors, retries = config.settings.maxRet
         let msg = `API status ${res.status} for ${url}`;
         if (res.status === 429) {
           msg = `Rate limit (429) hit at route ${routeId}. The remaining routes will be skipped.`;
-          console.warn(`[Warning] ${msg}`);
           errors.push({ routeId, status: res.status, message: msg });
           return { rateLimited: true };
         }
-        console.warn(`[Warning] Attempt ${i + 1} failed: ${msg}`);
         if (i === retries - 1) {
           errors.push({ routeId, status: res.status, message: msg });
           return null;
@@ -71,7 +68,6 @@ async function fetchQuiet(url, routeId, errors, retries = config.settings.maxRet
       clearTimeout(timeoutId);
       const isTimeout = e.name === 'AbortError';
       const msg = isTimeout ? `Timeout (10s) while fetching API` : `Error while fetching API: ${e.message}`;
-      console.error(`[Error] Attempt ${i + 1} failed: ${msg}`);
       if (i === retries - 1) {
         errors.push({ routeId, status: null, message: msg });
         return null;
@@ -87,16 +83,16 @@ function formatFlightRow(flight, label) {
   if (!flight) {
     return `<tr>
       <td style="padding:6px 10px; color:#888;"><strong>${label}</strong></td>
-      <td colspan="5" style="padding:6px 10px; color:#aaa; font-style:italic;">No direct flight found</td>
+      <td colspan="4" style="padding:6px 10px; color:#aaa; font-style:italic;">No direct flight found</td>
     </tr>`;
   }
-  const dateStr = flight.flightDate ? `<br><span style="font-size:0.85em; font-weight:normal;">${flight.flightDate}</span>` : '';
-  const flightNoStr = flight.flightNo ? ` <span style="color:#888; font-size:0.85em;">(${flight.flightNo})</span>` : '';
+  const dateStr = flight.flightDate
+    ? `<br><span style="font-size:0.85em; font-weight:normal; color:#888;">${flight.flightDate}</span>`
+    : '';
   return `<tr style="background:#f9f9f9;">
     <td style="padding:6px 10px;"><strong>${label}</strong>${dateStr}</td>
     <td style="padding:6px 10px;">${flight.from} → ${flight.to}</td>
     <td style="padding:6px 10px;">${flight.departure} – ${flight.arrival} <span style="color:#888; font-size:0.85em;">(${flight.duration})</span></td>
-    <td style="padding:6px 10px;">${flight.airline}${flightNoStr}</td>
     <td style="padding:6px 10px; font-weight:bold; color:#27ae60;">€${flight.price}</td>
     <td style="padding:6px 10px;"><a href="${flight.link}" style="color:#007BFF; white-space:nowrap;">Book flight →</a></td>
   </tr>`;
@@ -110,7 +106,7 @@ function formatFlightBlock(outbound, inbound, flightError) {
   const totalPrice = (outbound?.price || 0) + (inbound?.price || 0);
   const totalStr = (outbound && inbound)
     ? `<tr style="border-top:2px solid #ddd;">
-        <td colspan="4" style="padding:6px 10px; text-align:right; color:#555;"><em>Total outbound + return:</em></td>
+        <td colspan="3" style="padding:6px 10px; text-align:right; color:#555;"><em>Total outbound + return:</em></td>
         <td style="padding:6px 10px; font-weight:bold; color:#27ae60; font-size:1.05em;">€${totalPrice}</td>
         <td></td>
       </tr>`
@@ -123,7 +119,6 @@ function formatFlightBlock(outbound, inbound, flightError) {
         <th style="padding:6px 10px; text-align:left;">Direction</th>
         <th style="padding:6px 10px; text-align:left;">Route</th>
         <th style="padding:6px 10px; text-align:left;">Times</th>
-        <th style="padding:6px 10px; text-align:left;">Airline</th>
         <th style="padding:6px 10px; text-align:left;">Price</th>
         <th style="padding:6px 10px; text-align:left;"></th>
       </tr>
@@ -155,20 +150,13 @@ async function run() {
   }
 
   const useFlights = flightsEnabled();
-  if (useFlights) {
-    console.log(`Flight search enabled. Origins: ${config.flights.origins.join(', ')}`);
-  } else {
-    console.log('Flight search disabled (no origins configured).');
-  }
 
-  // FIX: Load history from file instead of always starting with an empty array
   let historyArray = [];
   if (fs.existsSync('history.json')) {
     try {
       historyArray = JSON.parse(fs.readFileSync('history.json', 'utf8'));
       if (!Array.isArray(historyArray)) historyArray = [];
     } catch (e) {
-      console.warn('[Warning] Could not parse history.json, starting fresh:', e.message);
       historyArray = [];
     }
   }
@@ -179,7 +167,6 @@ async function run() {
   const cutoffDate = new Date(today);
   cutoffDate.setDate(today.getDate() - 7);
 
-  // Prune old entries (older than cutoff) to keep history.json from growing forever
   historyArray = historyArray.filter(key => {
     const datePart = key.split('_')[1];
     if (!datePart) return false;
@@ -214,7 +201,7 @@ async function run() {
     const [fromId, toId] = routeId.split('-').map(Number);
     const stationFrom = getStationById(fromId);
     const stationTo = getStationById(toId);
-    console.log(`🔎 [${checkedCount}/${routesToCheck.length}] ${stationFrom.name} (${stationFrom.country}) -> ${stationTo.name} (${stationTo.country})`);
+    console.log(`🔎 [${checkedCount}/${routesToCheck.length}] ${stationFrom.name} -> ${stationTo.name}`);
 
     const url = `${process.env.API_BASE_URL}${routeId}`;
     const data = await fetchQuiet(url, routeId, errors, config.settings.maxRetries || 3);
@@ -261,9 +248,11 @@ async function run() {
     for (const [groupTitle, items] of Array.from(grouped.entries()).sort()) {
       const lines = [];
       for (const r of items) {
+        // Build booking link for this specific route
+        const routeBookingUrl = `${process.env.BOOKING_URL}?from=${r.stationFrom.iata || ''}&to=${r.stationTo.iata || ''}`;
+
         let flightHtml = '';
         if (useFlights && r.stationFrom.iata && r.stationTo.iata) {
-          console.log(`  ✈️  Fetching flights for ${r.stationFrom.name} → ${r.stationTo.name} (pickup: ${r.stationFrom.iata}, dropoff: ${r.stationTo.iata})`);
           const flightResult = await getFlightsForRoute(
             config.flights.origins,
             r.stationFrom.iata,
@@ -275,11 +264,15 @@ async function run() {
           );
           flightHtml = formatFlightBlock(flightResult.outbound, flightResult.inbound, flightResult.flightError);
         }
+
         lines.push(
           `<div style="margin-bottom:20px; padding:12px 16px; background:#fff; border:1px solid #e0e0e0; border-radius:6px;">` +
-          `<p style="margin:0 0 4px;"><strong>🚐 ${r.stationFrom.name} (${r.stationFrom.country}) → ${r.stationTo.name} (${r.stationTo.country})</strong></p>` +
+          `<p style="margin:0 0 2px;">` +
+            `<strong>🚐 ${r.stationFrom.name} (${r.stationFrom.country}) → ${r.stationTo.name} (${r.stationTo.country})</strong>` +
+            ` <a href="${process.env.BOOKING_URL}" style="font-size:0.85em; color:#007BFF; margin-left:8px;">View on website →</a>` +
+          `</p>` +
           `<p style="margin:0 0 8px; color:#555;">📅 ${formatDate(r.startDate)} to ${formatDate(r.endDate)}</p>` +
-          (flightHtml || '<p style="color:#aaa; font-style:italic;">No flight info available.</p>') +
+          (flightHtml || '<p style="color:#aaa; font-style:italic; margin:4px 0;">No flight info available.</p>') +
           `</div>`
         );
       }
