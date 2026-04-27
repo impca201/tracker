@@ -141,11 +141,58 @@ async function run() {
   }
 
   console.log('Tracker started...');
-  const configured = Array.isArray(config.cities) ? config.cities : [];
-  const selectedCityIds = new Set(configured.filter(id => typeof id === 'number' && stations[id]));
 
-  if (selectedCityIds.size === 0) {
-    console.log('No cities selected in config.js. The script is stopping.');
+  // --- Build route list from region pairs ---
+  const regions = config.regions || {};
+  const routePairs = Array.isArray(config.routes) ? config.routes : [];
+
+  // Resolves a route endpoint to a list of city IDs.
+  // Accepts either a region key (string) or a single city ID (number).
+  function resolveCities(regionOrId) {
+    if (typeof regionOrId === 'number') {
+      if (!stations[regionOrId]) {
+        console.warn(`[Warning] City ID ${regionOrId} not found in stations — skipping.`);
+        return [];
+      }
+      return [regionOrId];
+    }
+    const ids = (regions[regionOrId] || []).filter(id => typeof id === 'number' && stations[id]);
+    return ids;
+  }
+
+  const routesToCheck = [];
+  const addedRoutes = new Set();
+
+  for (const [from, to] of routePairs) {
+    const fromCities = resolveCities(from);
+    const toCities   = resolveCities(to);
+
+    const fromLabel = typeof from === 'number' ? `City ${from}` : `Region "${from}"`;
+    const toLabel   = typeof to   === 'number' ? `City ${to}`   : `Region "${to}"`;
+
+    if (fromCities.length === 0) {
+      console.warn(`[Warning] ${fromLabel} has no active cities — skipping.`);
+      continue;
+    }
+    if (toCities.length === 0) {
+      console.warn(`[Warning] ${toLabel} has no active cities — skipping.`);
+      continue;
+    }
+
+    for (const fromId of fromCities) {
+      for (const toId of toCities) {
+        if (fromId === toId) continue; // skip same-city routes
+        const routeKey = `${fromId}-${toId}`;
+        if (!addedRoutes.has(routeKey)) {
+          addedRoutes.add(routeKey);
+          routesToCheck.push(routeKey);
+        }
+      }
+    }
+  }
+
+  if (routesToCheck.length === 0) {
+    console.log('No routes to check. Make sure regions have active cities and routes are configured. The script is stopping.');
     return;
   }
 
@@ -179,15 +226,8 @@ async function run() {
   });
 
   const historySet = new Set(historyArray);
-  const selectedArray = Array.from(selectedCityIds);
-  const routesToCheck = [];
-  for (let i = 0; i < selectedArray.length; i++) {
-    for (let j = 0; j < selectedArray.length; j++) {
-      if (i === j) continue;
-      routesToCheck.push(`${selectedArray[i]}-${selectedArray[j]}`);
-    }
-  }
 
+  // Shuffle routes
   for (let i = routesToCheck.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [routesToCheck[i], routesToCheck[j]] = [routesToCheck[j], routesToCheck[i]];
