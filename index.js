@@ -6,6 +6,14 @@ const { getFlightsForRoute } = require('./flights');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Hard limit for a single run. A hung network handle must never keep the job
+// alive until the GitHub Actions timeout, because that skips the history commit.
+const WATCHDOG_MINUTES = 25;
+
+function saveHistory(historySet) {
+  fs.writeFileSync('history.json', JSON.stringify([...historySet].sort(), null, 2));
+}
+
 function getStationById(id) {
   return stations[Number(id)] || { name: `Station ${id}`, country: '??' };
 }
@@ -216,7 +224,7 @@ async function run() {
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
   const cutoffDate = new Date(today);
-  cutoffDate.setDate(today.getDate() - 7);
+  cutoffDate.setUTCDate(today.getUTCDate() - 7);
 
   historyArray = historyArray.filter(key => {
     const datePart = key.split('_')[1];
@@ -273,7 +281,7 @@ async function run() {
   const hadErrors = criticalErrors.length > 0;
 
   if (found.length === 0 && !hadErrors) {
-    fs.writeFileSync('history.json', JSON.stringify([...historySet].sort(), null, 2));
+    saveHistory(historySet);
     console.log('No new routes found and no critical API errors. No email sent.');
     return;
   }
@@ -367,12 +375,34 @@ async function run() {
     for (const r of found) historySet.add(r.uniqueKey);
   } catch (e) {
     console.error('[Error] Mail failed:', e.message);
+  } finally {
+    transporter.close();
   }
 
-  fs.writeFileSync('history.json', JSON.stringify([...historySet].sort(), null, 2));
+  saveHistory(historySet);
 }
 
-run().catch(err => {
-  console.error('[Critical error] Unexpected error in the application:', err);
+// Force the process down shortly after the work is done. Open SMTP or MCP
+// sockets can otherwise keep the event loop alive indefinitely; the delay gives
+// stdout time to flush, and unref() means we never delay a clean exit.
+function exitSoon(code) {
+  process.exitCode = code;
+  const timer = setTimeout(() => process.exit(code), 5000);
+  timer.unref();
+}
+
+// Fires only if the run itself hangs. Unref'd, so it never keeps the process up.
+const watchdog = setTimeout(() => {
+  console.error(`[Critical error] Watchdog: run exceeded ${WATCHDOG_MINUTES} minutes, forcing exit.`);
   process.exit(1);
+}, WATCHDOG_MINUTES * 60 * 1000);
+watchdog.unref();
+
+run().then(() => {
+  clearTimeout(watchdog);
+  exitSoon(0);
+}).catch(err => {
+  clearTimeout(watchdog);
+  console.error('[Critical error] Unexpected error in the application:', err);
+  exitSoon(1);
 });
