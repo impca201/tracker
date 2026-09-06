@@ -266,12 +266,23 @@ async function run() {
     if (delayTime > 0) await sleep(delayTime);
 
     if (Array.isArray(data) && data.length > 0) {
+      // Diagnostic: the API occasionally returns timeframe entries that don't
+      // fit the `startDate`/`endDate` shape we expect. Those used to be
+      // dropped silently, making a live offer on the website look like "no
+      // data" in these logs. Log what actually came back so a mismatch is
+      // visible instead of indistinguishable from a genuinely empty result.
+      console.log(`   ↳ API returned ${data.length} timeframe(s) for ${stationFrom.name} -> ${stationTo.name}: ${JSON.stringify(data)}`);
       for (const timeframe of data) {
-        if (!timeframe.startDate || !timeframe.endDate) continue;
+        if (!timeframe.startDate || !timeframe.endDate) {
+          console.log(`   ⚠️ Skipped timeframe with missing startDate/endDate: ${JSON.stringify(timeframe)}`);
+          continue;
+        }
         const uniqueKey = `${routeId}_${timeframe.startDate}`;
         if (!historySet.has(uniqueKey) && !found.find(f => f.uniqueKey === uniqueKey)) {
           console.log(`✅ New route found: ${stationFrom.name} -> ${stationTo.name}`);
           found.push({ fromId, toId, startDate: timeframe.startDate, endDate: timeframe.endDate, uniqueKey });
+        } else {
+          console.log(`   ↳ Timeframe ${timeframe.startDate} -> ${timeframe.endDate} already in history, skipping.`);
         }
       }
     }
