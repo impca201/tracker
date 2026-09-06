@@ -27,6 +27,11 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Check one route (diagnostic)
+        env:
+          API_BASE_URL: ${{ secrets.API_BASE_URL }}
+        run: node scripts/check-one-route.js 13 18
+
       - name: Run script
         env:
           EMAIL_USER: ${{ secrets.EMAIL_USER }}

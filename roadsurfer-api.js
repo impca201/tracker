@@ -3,15 +3,23 @@
 // One endpoint, derived from the single API_BASE_URL secret (which points
 // at .../rally/timeframes/):
 //   - stations list (X-Requested-Alias: rally.startStations) — every
-//     station Roadsurfer currently has, each with its live numeric ID,
-//     display name, and (bundled in the same response) the numeric IDs of
-//     every destination it can currently be one-wayed to.
+//     station Roadsurfer currently has, with its live numeric ID and
+//     display name.
 //
 // Station IDs are not stable long-term (Roadsurfer has been observed to
 // retire a station and reassign its old numeric ID to a different city).
 // So nothing in this codebase hardcodes an ID: config.js names cities by
 // their display name, and run() resolves those names against a freshly
 // fetched station list at the start of every run.
+//
+// The response also carries a `returns` field per station (the destination
+// IDs it's supposedly one-way-reachable to), which looked like a natural
+// way to skip checking city pairs that were never real routes. Don't use
+// it for that: a direct comparison found a station whose `returns` list
+// didn't include a destination that its timeframes endpoint still reported
+// a live, bookable offer for. It doesn't reliably track real-time
+// availability, so it isn't read here at all — every configured city pair
+// gets checked instead.
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -44,9 +52,7 @@ async function getJson(url, alias, timeoutMs = 10000) {
   }
 }
 
-// Returns every current Rally station as
-// { id, name, country, countryName, returns }, where `returns` is the
-// list of destination station IDs currently reachable one-way from it.
+// Returns every current Rally station as { id, name, country, countryName }.
 async function fetchStationList() {
   const stationsUrl = deriveStationsUrl(process.env.API_BASE_URL);
   const data = await getJson(stationsUrl, 'rally.startStations');
@@ -57,8 +63,7 @@ async function fetchStationList() {
     id: s.id,
     name: s.name || `Station ${s.id}`,
     country: (s.city && s.city.country) || '??',
-    countryName: (s.city && s.city.country_name) || '',
-    returns: Array.isArray(s.returns) ? s.returns : []
+    countryName: (s.city && s.city.country_name) || ''
   }));
 }
 

@@ -134,11 +134,14 @@ async function run() {
   const byName = new Map(liveStations.map(s => [s.name.toLowerCase(), s]));
   console.log(`Loaded ${liveStations.length} live stations.`);
 
-  // Each station's `returns` (valid one-way destination IDs) comes bundled
-  // in the same live station list fetched above, so no second API call is
-  // needed to find out which combinations are actually real routes.
-  const returnsById = new Map(liveStations.map(s => [s.id, new Set(s.returns)]));
-
+  // NOTE: each station's `returns` field (bundled in the same list fetch)
+  // looks like it should say which destinations are currently valid, but
+  // it does not reliably track real-time availability — confirmed by a
+  // direct check where a station's `returns` was empty while its
+  // timeframes endpoint still returned a real, live offer to that exact
+  // destination. Using it to prune candidate pairs silently hides real
+  // routes, so every configured city pair is checked instead, same as
+  // before this field was discovered.
   const routePairs = Array.isArray(config.routes) ? config.routes : [];
   const resolvedPairs = [];
   for (const [from, to] of routePairs) {
@@ -157,10 +160,8 @@ async function run() {
   const addedRoutes = new Set();
   for (const { fromIds, toIds } of resolvedPairs) {
     for (const fromId of fromIds) {
-      const validDestinations = returnsById.get(fromId) || new Set();
       for (const toId of toIds) {
         if (fromId === toId) continue;
-        if (!validDestinations.has(toId)) continue; // not a route Roadsurfer currently offers
         const routeKey = `${fromId}-${toId}`;
         if (!addedRoutes.has(routeKey)) {
           addedRoutes.add(routeKey);
