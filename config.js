@@ -20,7 +20,7 @@ module.exports = {
     // --- AT (Austria) ---
     AT: [
       'Graz',
-      'Innsbruck',
+      'Innsbruck-Wiesing', // live name confirmed 2026-09-06; was 'Innsbruck'
       'Linz',
       'Salzburg',
       'Vienna',
@@ -42,7 +42,9 @@ module.exports = {
     // --- CH (Switzerland) ---
     CH: [
       'Bern',
-      'Lucerne',
+      // 'Lucerne' not found in the live station list as of 2026-09-06 —
+      // no close-name match either, so likely discontinued rather than
+      // renamed. Left out rather than guessing a replacement.
       'Zurich (Wetzikon)',
     ],
 
@@ -61,7 +63,9 @@ module.exports = {
     // --- DE-EAST (Germany East) ---
     DE_EAST: [
       'Berlin',
-      'Chemnitz',
+      // 'Chemnitz' not found in the live station list as of 2026-09-06 —
+      // no close-name match either, so likely discontinued rather than
+      // renamed. Left out rather than guessing a replacement.
       'Dresden',
       'Erfurt',
       'Leipzig',
@@ -80,8 +84,10 @@ module.exports = {
       'Cologne-Dusseldorf',
       'Mainz',
       'Marburg',
-      'Mönchengladbach',
-      'Munster-Senden',
+      // 'Mönchengladbach' and 'Munster-Senden' not found in the live
+      // station list as of 2026-09-06 — no close-name match for either,
+      // so likely discontinued rather than renamed. Left out rather than
+      // guessing replacements.
       'Trier',
     ],
 
@@ -91,12 +97,14 @@ module.exports = {
       'Freiburg-Basel (Germany)',
       'Constance (Aach)',
       'Lindau-Wangen',
-      'Murnau',
+      // 'Murnau' and 'Stuttgart-Esslingen' not found in the live station
+      // list as of 2026-09-06 — no close-name match for either, so likely
+      // discontinued rather than renamed. Left out rather than guessing
+      // replacements.
       'Munich',
       'Nuremberg',
       'Regensburg',
       'Stuttgart',
-      'Stuttgart-Esslingen',
       'Ulm',
       'Würzburg',
     ],
@@ -148,7 +156,10 @@ module.exports = {
 
     // --- HR (Croatia) ---
     HR: [
-      'Split',
+      // 'Split' not found in the live station list as of 2026-09-06 — no
+      // close-name match either, so likely discontinued. Region left
+      // empty rather than guessing a replacement; any route referencing
+      // it will simply resolve to nothing and log a warning.
     ],
 
     // --- IE (Ireland) ---
@@ -201,17 +212,22 @@ module.exports = {
     US: [
       'Dallas',
       'Denver',
-      'Elkhart',
       'Las Vegas',
       'Los Angeles',
       'Miami',
       'New York',
       'Phoenix',
-      'Pt Roberts (near Vancouver)',
+      // 'Pt Roberts (near Vancouver)' not found in the live station list
+      // as of 2026-09-06 — no close-name match either, so likely
+      // discontinued rather than renamed. Left out rather than guessing
+      // a replacement.
       'Salt Lake City',
       'San Francisco',
       'Seattle',
-      'Thor Industries',
+      // 'Thor Industries' and 'Elkhart' were separate stations before;
+      // the live list now has a single combined 'Thor Industries,
+      // Elkhart' station (id 74, confirmed 2026-09-06).
+      'Thor Industries, Elkhart',
       'Winnebago Industries',
     ],
 
