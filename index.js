@@ -1,8 +1,7 @@
 const fs = require('fs');
 const nodemailer = require('nodemailer');
 const config = require('./config');
-const { stations, countryNames } = require('./stations.json');
-const { getFlightsForRoute } = require('./flights');
+const { fetchStationList, fetchStationReturns } = require('./roadsurfer-api');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -10,12 +9,19 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 // alive until the GitHub Actions timeout, because that skips the history commit.
 const WATCHDOG_MINUTES = 25;
 
+// Populated at the start of run() from the live station list. Cities are
+// configured by name (see config.js) precisely because Roadsurfer's numeric
+// station IDs have been observed to shift over time, so nothing here is
+// hardcoded — every run resolves names against whatever the API currently
+// reports.
+let stationsById = new Map();
+
 function saveHistory(historySet) {
   fs.writeFileSync('history.json', JSON.stringify([...historySet].sort(), null, 2));
 }
 
 function getStationById(id) {
-  return stations[Number(id)] || { name: `Station ${id}`, country: '??' };
+  return stationsById.get(Number(id)) || { name: `Station ${id}`, country: '??', countryName: '' };
 }
 
 function formatDate(dateString) {
@@ -29,11 +35,6 @@ function formatRouteLabel(routeId) {
   const from = getStationById(fromId);
   const to = getStationById(toId);
   return `${from.name} (${from.country}) -> ${to.name} (${to.country})`;
-}
-
-function flightsEnabled() {
-  const f = config.flights;
-  return f && Array.isArray(f.origins) && f.origins.length > 0;
 }
 
 async function fetchQuiet(url, routeId, errors, retries = config.settings.maxRetries || 3) {
@@ -87,57 +88,26 @@ async function fetchQuiet(url, routeId, errors, retries = config.settings.maxRet
   return null;
 }
 
-function formatFlightRow(flight, label) {
-  if (!flight) {
-    return `<tr>
-      <td style="padding:6px 10px; color:#888;"><strong>${label}</strong></td>
-      <td colspan="4" style="padding:6px 10px; color:#aaa; font-style:italic;">No direct flight found</td>
-    </tr>`;
+// Resolves a route endpoint (a region key, or a literal city name) to the
+// live station(s) it currently refers to. Anything that doesn't match a
+// known region key is treated as a single city name. A name that doesn't
+// match any live station is reported as an error (rather than silently
+// dropped) — that's the tracker's early-warning system for a station
+// having been renamed or removed on Roadsurfer's side.
+function resolveEndpoint(entry, byName, errors) {
+  const names = config.regions[entry] ? config.regions[entry] : [entry];
+  const ids = [];
+  for (const name of names) {
+    const station = byName.get(String(name).toLowerCase());
+    if (!station) {
+      const msg = `Configured city "${name}" not found in the live station list (renamed or removed?).`;
+      console.warn(`[Warning] ${msg}`);
+      errors.push({ routeId: null, status: null, message: msg });
+      continue;
+    }
+    ids.push(station.id);
   }
-  const dateStr = flight.flightDate
-    ? `<br><span style="font-size:0.85em; font-weight:normal; color:#888;">${flight.flightDate}</span>`
-    : '';
-  return `<tr style="background:#f9f9f9;">
-    <td style="padding:6px 10px;"><strong>${label}</strong>${dateStr}</td>
-    <td style="padding:6px 10px;">${flight.from} → ${flight.to}</td>
-    <td style="padding:6px 10px;">${flight.departure} – ${flight.arrival} <span style="color:#888; font-size:0.85em;">(${flight.duration})</span></td>
-    <td style="padding:6px 10px; font-weight:bold; color:#27ae60;">€${flight.price}</td>
-    <td style="padding:6px 10px;"><a href="${flight.link}" style="color:#007BFF; white-space:nowrap;">Book flight →</a></td>
-  </tr>`;
-}
-
-function formatFlightBlock(outbound, inbound, flightError) {
-  if (flightError) {
-    return `<p style="color:#c0392b; font-size:0.9em; margin:4px 0;">⚠️ Flight prices could not be retrieved: ${flightError}</p>`;
-  }
-
-  const totalPrice = (outbound?.price || 0) + (inbound?.price || 0);
-  const totalStr = (outbound && inbound)
-    ? `<tr style="border-top:2px solid #ddd;">
-        <td colspan="3" style="padding:6px 10px; text-align:right; color:#555;"><em>Total outbound + return:</em></td>
-        <td style="padding:6px 10px; font-weight:bold; color:#27ae60; font-size:1.05em;">€${totalPrice}</td>
-        <td></td>
-      </tr>`
-    : '';
-
-  return `
-  <table style="border-collapse:collapse; width:100%; margin:8px 0; font-size:0.9em; border:1px solid #e0e0e0; border-radius:4px; overflow:hidden;">
-    <thead>
-      <tr style="background:#f0f0f0;">
-        <th style="padding:6px 10px; text-align:left;">Direction</th>
-        <th style="padding:6px 10px; text-align:left;">Route</th>
-        <th style="padding:6px 10px; text-align:left;">Times</th>
-        <th style="padding:6px 10px; text-align:left;">Price</th>
-        <th style="padding:6px 10px; text-align:left;"></th>
-      </tr>
-    </thead>
-    <tbody>
-      ${formatFlightRow(outbound, '✈️ Outbound')}
-      ${formatFlightRow(inbound, '✈️ Return')}
-      ${totalStr}
-    </tbody>
-  </table>
-  <p style="color:#888; font-size:0.8em; margin:2px 0 0;">ℹ️ Cheapest direct flights via Kiwi.com — verify availability before booking.</p>`;
+  return ids;
 }
 
 async function run() {
@@ -150,46 +120,61 @@ async function run() {
 
   console.log('Tracker started...');
 
-  // --- Build route list from region pairs ---
-  const regions = config.regions || {};
-  const routePairs = Array.isArray(config.routes) ? config.routes : [];
+  const errors = [];
 
-  // Resolves a route endpoint to a list of city IDs.
-  // Accepts either a region key (string) or a single city ID (number).
-  function resolveCities(regionOrId) {
-    if (typeof regionOrId === 'number') {
-      if (!stations[regionOrId]) {
-        console.warn(`[Warning] City ID ${regionOrId} not found in stations — skipping.`);
-        return [];
-      }
-      return [regionOrId];
+  // --- Fetch the live station list and resolve configured routes against it ---
+  let liveStations;
+  try {
+    liveStations = await fetchStationList();
+  } catch (e) {
+    console.error(`[Critical error] Could not fetch the live station list: ${e.message}`);
+    process.exit(1);
+  }
+  stationsById = new Map(liveStations.map(s => [s.id, s]));
+  const byName = new Map(liveStations.map(s => [s.name.toLowerCase(), s]));
+  console.log(`Loaded ${liveStations.length} live stations.`);
+
+  const routePairs = Array.isArray(config.routes) ? config.routes : [];
+  const fromIdsNeeded = new Set();
+  const resolvedPairs = [];
+  for (const [from, to] of routePairs) {
+    const fromIds = resolveEndpoint(from, byName, errors);
+    const toIds = resolveEndpoint(to, byName, errors);
+    if (fromIds.length === 0 || toIds.length === 0) {
+      console.warn(`[Warning] Route "${from}" -> "${to}" has no resolvable cities on one side — skipping.`);
+      continue;
     }
-    const ids = (regions[regionOrId] || []).filter(id => typeof id === 'number' && stations[id]);
-    return ids;
+    fromIds.forEach(id => fromIdsNeeded.add(id));
+    resolvedPairs.push({ fromIds, toIds });
+  }
+
+  const delayTime = (typeof config.settings.delayMs === 'number') ? config.settings.delayMs : 2000;
+
+  // Ask each origin station which destinations it can actually be
+  // one-wayed to right now, instead of guessing every combination inside
+  // the configured regions — most of those would never be real routes.
+  const returnsById = new Map();
+  for (const fromId of fromIdsNeeded) {
+    try {
+      const validDestinations = await fetchStationReturns(fromId);
+      returnsById.set(fromId, new Set(validDestinations));
+    } catch (e) {
+      const msg = `Could not fetch valid destinations for ${getStationById(fromId).name} (id ${fromId}): ${e.message}`;
+      console.warn(`[Warning] ${msg}`);
+      errors.push({ routeId: null, status: null, message: msg });
+      returnsById.set(fromId, new Set());
+    }
+    if (delayTime > 0) await sleep(delayTime);
   }
 
   const routesToCheck = [];
   const addedRoutes = new Set();
-
-  for (const [from, to] of routePairs) {
-    const fromCities = resolveCities(from);
-    const toCities   = resolveCities(to);
-
-    const fromLabel = typeof from === 'number' ? `City ${from}` : `Region "${from}"`;
-    const toLabel   = typeof to   === 'number' ? `City ${to}`   : `Region "${to}"`;
-
-    if (fromCities.length === 0) {
-      console.warn(`[Warning] ${fromLabel} has no active cities — skipping.`);
-      continue;
-    }
-    if (toCities.length === 0) {
-      console.warn(`[Warning] ${toLabel} has no active cities — skipping.`);
-      continue;
-    }
-
-    for (const fromId of fromCities) {
-      for (const toId of toCities) {
-        if (fromId === toId) continue; // skip same-city routes
+  for (const { fromIds, toIds } of resolvedPairs) {
+    for (const fromId of fromIds) {
+      const validDestinations = returnsById.get(fromId) || new Set();
+      for (const toId of toIds) {
+        if (fromId === toId) continue;
+        if (!validDestinations.has(toId)) continue; // not a route Roadsurfer currently offers
         const routeKey = `${fromId}-${toId}`;
         if (!addedRoutes.has(routeKey)) {
           addedRoutes.add(routeKey);
@@ -199,14 +184,7 @@ async function run() {
     }
   }
 
-  if (routesToCheck.length === 0) {
-    console.log('No routes to check. Make sure regions have active cities and routes are configured. The script is stopping.');
-    return;
-  }
-
-  const useFlights = flightsEnabled();
-
-  // --- History: lezen ---
+  // --- History: read ---
   let historyArray = [];
   if (fs.existsSync('history.json')) {
     try {
@@ -243,9 +221,7 @@ async function run() {
 
   console.log(`Checking ${routesToCheck.length} combinations.`);
 
-  const delayTime = (typeof config.settings.delayMs === 'number') ? config.settings.delayMs : 2000;
   const found = [];
-  const errors = [];
 
   let checkedCount = 0;
   for (const routeId of routesToCheck) {
@@ -266,11 +242,10 @@ async function run() {
     if (delayTime > 0) await sleep(delayTime);
 
     if (Array.isArray(data) && data.length > 0) {
-      // Diagnostic: the API occasionally returns timeframe entries that don't
-      // fit the `startDate`/`endDate` shape we expect. Those used to be
-      // dropped silently, making a live offer on the website look like "no
-      // data" in these logs. Log what actually came back so a mismatch is
-      // visible instead of indistinguishable from a genuinely empty result.
+      // Log the raw payload whenever a route returns data: it makes a real
+      // mismatch (unexpected date format, already-recorded window, etc.)
+      // visible in the run logs instead of looking identical to a
+      // genuinely empty result.
       console.log(`   ↳ API returned ${data.length} timeframe(s) for ${stationFrom.name} -> ${stationTo.name}: ${JSON.stringify(data)}`);
       for (const timeframe of data) {
         if (!timeframe.startDate || !timeframe.endDate) {
@@ -303,41 +278,21 @@ async function run() {
     for (const r of found) {
       const stationFrom = getStationById(r.fromId);
       const stationTo = getStationById(r.toId);
-      const title = countryNames[stationTo.country] || stationTo.country;
+      const title = stationTo.countryName || stationTo.country;
       if (!grouped.has(title)) grouped.set(title, []);
       grouped.get(title).push({ ...r, stationFrom, stationTo });
     }
 
     for (const [groupTitle, items] of Array.from(grouped.entries()).sort()) {
-      const lines = [];
-      for (const r of items) {
-        const routeBookingUrl = `${process.env.BOOKING_URL}?from=${r.stationFrom.iata || ''}&to=${r.stationTo.iata || ''}`;
-
-        let flightHtml = '';
-        if (useFlights && r.stationFrom.iata && r.stationTo.iata) {
-          const flightResult = await getFlightsForRoute(
-            config.flights.origins,
-            r.stationFrom.iata,
-            r.stationTo.iata,
-            r.startDate,
-            r.endDate,
-            config.flights.departureWindow,
-            config.flights.returnWindow
-          );
-          flightHtml = formatFlightBlock(flightResult.outbound, flightResult.inbound, flightResult.flightError);
-        }
-
-        lines.push(
-          `<div style="margin-bottom:20px; padding:12px 16px; background:#fff; border:1px solid #e0e0e0; border-radius:6px;">` +
-          `<p style="margin:0 0 2px;">` +
-            `<strong>🚐 ${r.stationFrom.name} (${r.stationFrom.country}) → ${r.stationTo.name} (${r.stationTo.country})</strong>` +
-            ` <a href="${process.env.BOOKING_URL}" style="font-size:0.85em; color:#007BFF; margin-left:8px;">View on website →</a>` +
-          `</p>` +
-          `<p style="margin:0 0 8px; color:#555;">📅 ${formatDate(r.startDate)} to ${formatDate(r.endDate)}</p>` +
-          (flightHtml || '<p style="color:#aaa; font-style:italic; margin:4px 0;">No flight info available.</p>') +
-          `</div>`
-        );
-      }
+      const lines = items.map(r => (
+        `<div style="margin-bottom:20px; padding:12px 16px; background:#fff; border:1px solid #e0e0e0; border-radius:6px;">` +
+        `<p style="margin:0 0 2px;">` +
+          `<strong>🚐 ${r.stationFrom.name} (${r.stationFrom.country}) → ${r.stationTo.name} (${r.stationTo.country})</strong>` +
+          ` <a href="${process.env.BOOKING_URL}" style="font-size:0.85em; color:#007BFF; margin-left:8px;">View on website →</a>` +
+        `</p>` +
+        `<p style="margin:0 0 8px; color:#555;">📅 ${formatDate(r.startDate)} to ${formatDate(r.endDate)}</p>` +
+        `</div>`
+      ));
       blocks.push(`<h3 style="margin:20px 0 8px; border-bottom:2px solid #eee; padding-bottom:4px;">${groupTitle}</h3>${lines.join('')}`);
     }
   }

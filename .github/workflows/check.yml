@@ -27,12 +27,6 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Fetch live station list (diagnostic)
-        continue-on-error: true
-        env:
-          API_BASE_URL: ${{ secrets.API_BASE_URL }}
-        run: node scripts/fetch-live-stations.js
-
       - name: Run script
         env:
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
