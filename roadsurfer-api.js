@@ -55,10 +55,31 @@ async function getJson(url, alias, timeoutMs = 10000) {
   }
 }
 
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// A single failed getJson() call previously meant one flaky request took
+// down an entire per-station returns fetch, falling back to checking every
+// configured destination for that station. That fallback is harmless (see
+// the header comment), but it's needlessly frequent for a plain timeout or
+// transient 5xx — a couple of retries covers that without weakening the
+// fail-open guarantee for a genuinely broken endpoint.
+async function getJsonWithRetries(url, alias, retries = 3) {
+  let lastErr;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await getJson(url, alias);
+    } catch (e) {
+      lastErr = e;
+      if (i < retries - 1) await sleep(1000 * (i + 1));
+    }
+  }
+  throw lastErr;
+}
+
 // Returns every current Rally station as { id, name, country, countryName }.
 async function fetchStationList() {
   const stationsUrl = deriveStationsUrl(process.env.API_BASE_URL);
-  const data = await getJson(stationsUrl, 'rally.startStations');
+  const data = await getJsonWithRetries(stationsUrl, 'rally.startStations');
   if (!Array.isArray(data)) {
     throw new Error('Unexpected station list response shape (expected an array).');
   }
@@ -76,7 +97,7 @@ async function fetchStationList() {
 // response's bundled field, is the one to trust).
 async function fetchStationReturns(id) {
   const stationsUrl = deriveStationsUrl(process.env.API_BASE_URL);
-  const data = await getJson(`${stationsUrl}/${id}`, 'rally.fetchRoutes');
+  const data = await getJsonWithRetries(`${stationsUrl}/${id}`, 'rally.fetchRoutes');
   if (!data || !Array.isArray(data.returns)) {
     throw new Error(`Unexpected station detail response shape for station ${id} (expected a "returns" array).`);
   }

@@ -250,6 +250,15 @@ module.exports = {
     ['BE',       'PT'      ],  // Belgium      → Portugal
     ['ES',       'BE'      ],  // Spain        → Belgium
     ['PT',       'BE'      ],  // Portugal     → Belgium
+    // Aachen (DE) is the only Roadsurfer station actually close to the
+    // Belgian border (~5km) — confirmed 2026-09-06 against the live
+    // station list. The next-nearest German stations (Cologne-Bonn,
+    // Cologne-Dusseldorf, Duisburg) are 65-100km out, not "close" by any
+    // normal reading, so they're left out of this pairing; add them here
+    // too if a wider net is wanted. 'Aachen' also exists in the DE_WEST
+    // region above, but DE_WEST itself was never in this active list.
+    ['BE',       'Aachen'  ],  // Belgium      → Aachen (DE, near BE border)
+    ['Aachen',   'BE'      ],  // Aachen (DE, near BE border) → Belgium
     ['FR_SOUTH', 'ES'      ],  // South France → Spain
     ['FR_SOUTH', 'PT'      ],  // South France → Portugal
     ['ES',       'FR_SOUTH'],  // Spain        → South France

@@ -20,6 +20,29 @@ function saveHistory(historySet) {
   fs.writeFileSync('history.json', JSON.stringify([...historySet].sort(), null, 2));
 }
 
+// Used only for the small number of failures fatal enough to exit before
+// the normal end-of-run email logic runs (currently: can't even fetch the
+// live station list). Without this, a persistent failure here would exit
+// silently — no email, nothing but a GitHub Actions log nobody checks
+// routinely, which is exactly the kind of quiet failure this tracker
+// exists to avoid.
+async function sendFatalErrorEmail(message) {
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+  });
+  try {
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: process.env.EMAIL_TO,
+      subject: '⚠️ Camper Tracker: run aborted',
+      html: `<p>Hi!</p><p>The tracker run stopped before it could check any routes:</p><p style="font-family:monospace;">${message}</p>`
+    });
+  } finally {
+    transporter.close();
+  }
+}
+
 function getStationById(id) {
   return stationsById.get(Number(id)) || { name: `Station ${id}`, country: '??', countryName: '' };
 }
@@ -127,7 +150,13 @@ async function run() {
   try {
     liveStations = await fetchStationList();
   } catch (e) {
-    console.error(`[Critical error] Could not fetch the live station list: ${e.message}`);
+    const msg = `Could not fetch the live station list: ${e.message}`;
+    console.error(`[Critical error] ${msg}`);
+    try {
+      await sendFatalErrorEmail(msg);
+    } catch (mailErr) {
+      console.error('[Error] Could not send the fatal-error email either:', mailErr.message);
+    }
     process.exit(1);
   }
   stationsById = new Map(liveStations.map(s => [s.id, s]));
@@ -172,7 +201,12 @@ async function run() {
       const station = getStationById(id);
       const msg = `Could not fetch the live returns list for "${station.name}" (${id}): ${e.message}. Checking all its configured destinations instead of narrowing by returns.`;
       console.warn(`[Warning] ${msg}`);
-      errors.push({ routeId: null, status: null, message: msg });
+      // Not pushed to `errors`/flagged critical: the fail-open fallback
+      // above means this never hides a route, just costs a few extra
+      // timeframes calls for this one origin. Alarming the recipient with
+      // an "API problems" email for a benign, self-healing efficiency
+      // blip would just be noise — it's logged here for anyone reading
+      // the run log, nothing more.
     }
     if (delayTime > 0 && i < originIdList.length - 1) await sleep(delayTime);
   }
