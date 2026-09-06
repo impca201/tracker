@@ -1,0 +1,21 @@
+name: Dump live station list (diagnostic)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dump-stations:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Fetch live station list
+        env:
+          API_BASE_URL: ${{ secrets.API_BASE_URL }}
+        run: node scripts/fetch-live-stations.js
