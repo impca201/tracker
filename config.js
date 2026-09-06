@@ -83,7 +83,10 @@ module.exports = {
       90,  // Lindau-Wangen
       31,  // Murnau
       1,   // Munich
-      18,  // Nuremberg
+      // Nuremberg removed: its old ID (18) has been reassigned by the site
+      // to Lisbon (see PT region below) — the site must have retired the
+      // old Nuremberg station and reused its numeric ID. Re-add Nuremberg
+      // here once its current, correct station ID is confirmed.
       45,  // Regensburg
       5,   // Stuttgart
       35,  // Stuttgart-Esslingen
@@ -177,7 +180,7 @@ module.exports = {
     // --- PT (Portugal) ---
     PT: [
       83,  // Faro
-      19,  // Lisbon
+      18,  // Lisbon (was ID 19 — corrected, see stations.json)
       84,  // Porto
     ],
 
