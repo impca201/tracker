@@ -259,6 +259,20 @@ module.exports = {
     // region above, but DE_WEST itself was never in this active list.
     ['BE',       'Aachen'  ],  // Belgium      → Aachen (DE, near BE border)
     ['Aachen',   'BE'      ],  // Aachen (DE, near BE border) → Belgium
+    // Lille (FR) is both north of Paris and the only Roadsurfer station
+    // close to the Belgian border on the French side (~15km) — confirmed
+    // 2026-09-06. The other FR_NORTH cities aren't north-of-Paris/near-BE
+    // candidates: Paris South (Orly) and Paris Airport CDG are Paris
+    // itself, Strasbourg is on the German border (east), Geneva-Pays de
+    // Gex is on the Swiss border (southeast), Nantes is west.
+    //
+    // No Dutch station qualifies for "south Netherlands, near Belgium":
+    // Roadsurfer's only NL stations are Amsterdam and Rotterdam, both in
+    // the west/north of the country (60-140km from the Belgian border,
+    // and neither in the south) — nothing like Maastricht, Eindhoven,
+    // Breda, or Tilburg exists in the live station list to add.
+    ['BE',       'Lille'   ],  // Belgium      → Lille (FR, near BE border)
+    ['Lille',    'BE'      ],  // Lille (FR, near BE border) → Belgium
     ['FR_SOUTH', 'ES'      ],  // South France → Spain
     ['FR_SOUTH', 'PT'      ],  // South France → Portugal
     ['ES',       'FR_SOUTH'],  // Spain        → South France
