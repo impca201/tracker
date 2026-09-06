@@ -1,7 +1,7 @@
 const fs = require('fs');
 const nodemailer = require('nodemailer');
 const config = require('./config');
-const { fetchStationList } = require('./roadsurfer-api');
+const { fetchStationList, fetchStationReturns } = require('./roadsurfer-api');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -134,11 +134,6 @@ async function run() {
   const byName = new Map(liveStations.map(s => [s.name.toLowerCase(), s]));
   console.log(`Loaded ${liveStations.length} live stations.`);
 
-  // Each station's `returns` (valid one-way destination IDs) comes bundled
-  // in the same live station list fetched above, so no second API call is
-  // needed to find out which combinations are actually real routes.
-  const returnsById = new Map(liveStations.map(s => [s.id, new Set(s.returns)]));
-
   const routePairs = Array.isArray(config.routes) ? config.routes : [];
   const resolvedPairs = [];
   for (const [from, to] of routePairs) {
@@ -153,14 +148,43 @@ async function run() {
 
   const delayTime = (typeof config.settings.delayMs === 'number') ? config.settings.delayMs : 2000;
 
+  // Each configured origin station's live `returns` list (see
+  // roadsurfer-api.js) narrows down which of its configured destinations
+  // are actually worth spending a timeframes call on. One detail fetch per
+  // unique origin, done once up front here, replaces what would otherwise
+  // be a full cross-product of timeframes checks.
+  //
+  // A station whose detail fetch fails is NOT narrowed — every one of its
+  // configured destinations is still checked. Failing open like this means
+  // a flaky detail fetch can only cost some extra timeframes calls, never
+  // silently hide a route the way trusting bad data would.
+  const originIds = new Set();
+  for (const { fromIds } of resolvedPairs) fromIds.forEach(id => originIds.add(id));
+
+  const returnsById = new Map(); // stationId -> Set<destinationId>; absent = fetch failed, don't narrow
+  const originIdList = [...originIds];
+  for (let i = 0; i < originIdList.length; i++) {
+    const id = originIdList[i];
+    try {
+      const returns = await fetchStationReturns(id);
+      returnsById.set(id, new Set(returns));
+    } catch (e) {
+      const station = getStationById(id);
+      const msg = `Could not fetch the live returns list for "${station.name}" (${id}): ${e.message}. Checking all its configured destinations instead of narrowing by returns.`;
+      console.warn(`[Warning] ${msg}`);
+      errors.push({ routeId: null, status: null, message: msg });
+    }
+    if (delayTime > 0 && i < originIdList.length - 1) await sleep(delayTime);
+  }
+
   const routesToCheck = [];
   const addedRoutes = new Set();
   for (const { fromIds, toIds } of resolvedPairs) {
     for (const fromId of fromIds) {
-      const validDestinations = returnsById.get(fromId) || new Set();
+      const reachable = returnsById.get(fromId);
       for (const toId of toIds) {
         if (fromId === toId) continue;
-        if (!validDestinations.has(toId)) continue; // not a route Roadsurfer currently offers
+        if (reachable && !reachable.has(toId)) continue;
         const routeKey = `${fromId}-${toId}`;
         if (!addedRoutes.has(routeKey)) {
           addedRoutes.add(routeKey);
