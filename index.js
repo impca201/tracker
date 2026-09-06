@@ -1,7 +1,7 @@
 const fs = require('fs');
 const nodemailer = require('nodemailer');
 const config = require('./config');
-const { fetchStationList, fetchStationReturns } = require('./roadsurfer-api');
+const { fetchStationList } = require('./roadsurfer-api');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -134,8 +134,12 @@ async function run() {
   const byName = new Map(liveStations.map(s => [s.name.toLowerCase(), s]));
   console.log(`Loaded ${liveStations.length} live stations.`);
 
+  // Each station's `returns` (valid one-way destination IDs) comes bundled
+  // in the same live station list fetched above, so no second API call is
+  // needed to find out which combinations are actually real routes.
+  const returnsById = new Map(liveStations.map(s => [s.id, new Set(s.returns)]));
+
   const routePairs = Array.isArray(config.routes) ? config.routes : [];
-  const fromIdsNeeded = new Set();
   const resolvedPairs = [];
   for (const [from, to] of routePairs) {
     const fromIds = resolveEndpoint(from, byName, errors);
@@ -144,28 +148,10 @@ async function run() {
       console.warn(`[Warning] Route "${from}" -> "${to}" has no resolvable cities on one side — skipping.`);
       continue;
     }
-    fromIds.forEach(id => fromIdsNeeded.add(id));
     resolvedPairs.push({ fromIds, toIds });
   }
 
   const delayTime = (typeof config.settings.delayMs === 'number') ? config.settings.delayMs : 2000;
-
-  // Ask each origin station which destinations it can actually be
-  // one-wayed to right now, instead of guessing every combination inside
-  // the configured regions — most of those would never be real routes.
-  const returnsById = new Map();
-  for (const fromId of fromIdsNeeded) {
-    try {
-      const validDestinations = await fetchStationReturns(fromId);
-      returnsById.set(fromId, new Set(validDestinations));
-    } catch (e) {
-      const msg = `Could not fetch valid destinations for ${getStationById(fromId).name} (id ${fromId}): ${e.message}`;
-      console.warn(`[Warning] ${msg}`);
-      errors.push({ routeId: null, status: null, message: msg });
-      returnsById.set(fromId, new Set());
-    }
-    if (delayTime > 0) await sleep(delayTime);
-  }
 
   const routesToCheck = [];
   const addedRoutes = new Set();
